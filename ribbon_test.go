@@ -79,10 +79,10 @@ func TestNewWithConfig_NormalizesMaxSeeds(t *testing.T) {
 		CoeffBits:           128,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            0,
+		maxSeeds:            0,
 	})
-	if rb.cfg.MaxSeeds != 256 {
-		t.Errorf("MaxSeeds = %d, want 256 (normalised from 0)", rb.cfg.MaxSeeds)
+	if rb.cfg.maxSeeds != 256 {
+		t.Errorf("MaxSeeds = %d, want 256 (normalised from 0)", rb.cfg.maxSeeds)
 	}
 
 	// Explicit MaxSeeds should be preserved.
@@ -90,10 +90,10 @@ func TestNewWithConfig_NormalizesMaxSeeds(t *testing.T) {
 		CoeffBits:           64,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            50,
+		maxSeeds:            50,
 	})
-	if rb.cfg.MaxSeeds != 50 {
-		t.Errorf("MaxSeeds = %d, want 50", rb.cfg.MaxSeeds)
+	if rb.cfg.maxSeeds != 50 {
+		t.Errorf("MaxSeeds = %d, want 50", rb.cfg.maxSeeds)
 	}
 }
 
@@ -474,7 +474,7 @@ func TestRibbon_Build_ErrConstructionFailed(t *testing.T) {
 		CoeffBits:           128,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            1,
+		maxSeeds:            1,
 	})
 
 	// Use enough keys to make single-seed failure very likely.
@@ -500,7 +500,7 @@ func TestRibbon_Build_ErrorDoesNotCorruptState(t *testing.T) {
 		CoeffBits:           128,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            1,
+		maxSeeds:            1,
 	})
 
 	keys := generateStringKeys("fail_then_retry", 10000)
@@ -517,7 +517,7 @@ func TestRibbon_Build_ErrorDoesNotCorruptState(t *testing.T) {
 			CoeffBits:           128,
 			ResultBits:          7,
 			FirstCoeffAlwaysOne: true,
-			MaxSeeds:            256,
+			maxSeeds:            256,
 		})
 		if err2 := rb2.Build(keys); err2 != nil {
 			t.Fatalf("retry Build failed: %v", err2)

@@ -136,7 +136,7 @@ func buildCore(hashes []uint64, cfg Config) (*filter, error) {
 	hrs := make([]hashResult, numKeys)
 
 	// Seed-retry loop.
-	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
+	for seed := uint32(0); seed < cfg.maxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
 
 		// Phase 2: derive (start, coeffRow, result) for all keys.
@@ -175,8 +175,8 @@ func validateConfig(cfg Config) {
 
 // normalizeConfig fills in zero-valued optional fields with sensible defaults.
 func normalizeConfig(cfg Config) Config {
-	if cfg.MaxSeeds == 0 {
-		cfg.MaxSeeds = 256
+	if cfg.maxSeeds == 0 {
+		cfg.maxSeeds = 256
 	}
 	return cfg
 }
@@ -405,7 +405,7 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 	bd := newStandardBander(numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
 	hrs := make([]hashResult, numKeys)
 
-	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
+	for seed := uint32(0); seed < cfg.maxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
 		for i, kh := range hashes {
 			hrs[i] = h.derive(kh)

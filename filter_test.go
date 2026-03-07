@@ -577,7 +577,7 @@ func TestBuild_TightOverhead(t *testing.T) {
 		CoeffBits:           128,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            256,
+		maxSeeds:            256,
 	}
 	cfg = normalizeConfig(cfg)
 
@@ -617,7 +617,7 @@ func TestBuild_MaxSeedsExhausted(t *testing.T) {
 		CoeffBits:           128,
 		ResultBits:          7,
 		FirstCoeffAlwaysOne: true,
-		MaxSeeds:            1, // only 1 attempt
+		maxSeeds:            1, // only 1 attempt
 	}
 	cfg = normalizeConfig(cfg)
 
