@@ -91,6 +91,22 @@ func (u uint128) bit(i uint) uint {
 	return uint((u.lo >> i) & 1)
 }
 
+// trailingZeros returns the number of trailing zero bits in the 128-bit value.
+// If u is zero, returns 128 (all bits are trailing zeros).
+//
+// Used by the banding algorithm to find the pivot offset — the lowest set bit
+// in a coefficient row determines which column is the elimination pivot.
+//
+// Performance: compiles to a single TZCNT/BSF instruction on the lo half
+// in the common case (w≤64, or w=128 when lo≠0). The hi half is only
+// touched when lo is entirely zero.
+func (u uint128) trailingZeros() uint {
+	if u.lo != 0 {
+		return uint(bits.TrailingZeros64(u.lo))
+	}
+	return 64 + uint(bits.TrailingZeros64(u.hi))
+}
+
 // putBytes serialises the uint128 into a 16-byte array in little-endian order.
 // lo occupies bytes [0..7], hi occupies bytes [8..15].
 func (u uint128) putBytes() [16]byte {

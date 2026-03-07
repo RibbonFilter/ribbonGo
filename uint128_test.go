@@ -164,3 +164,45 @@ func TestUint128_FromBytes_PanicOnShortSlice(t *testing.T) {
 		})
 	}
 }
+
+// ---------------------------------------------------------------------------
+// trailingZeros — find the lowest set bit position
+// ---------------------------------------------------------------------------
+
+func TestUint128_TrailingZeros(t *testing.T) {
+	cases := []struct {
+		name string
+		val  uint128
+		want uint
+	}{
+		// lo-only values (common case for w≤64)
+		{"lo_bit0", uint128{lo: 1}, 0},
+		{"lo_bit1", uint128{lo: 2}, 1},
+		{"lo_bit63", uint128{lo: 1 << 63}, 63},
+		{"lo_mixed", uint128{lo: 0x80}, 7},
+		{"lo_all_ones", uint128{lo: ^uint64(0)}, 0},
+
+		// hi-only values (lo=0, w=128 scenarios)
+		{"hi_bit0", uint128{hi: 1}, 64},
+		{"hi_bit1", uint128{hi: 2}, 65},
+		{"hi_bit63", uint128{hi: 1 << 63}, 127},
+		{"hi_mixed", uint128{hi: 0x100}, 72},
+
+		// both halves set — lo takes precedence
+		{"both_lo_wins", uint128{hi: 1, lo: 4}, 2},
+		{"both_lo_bit0", uint128{hi: ^uint64(0), lo: 1}, 0},
+
+		// zero value (edge case — should return 128)
+		{"zero", uint128{}, 128},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.val.trailingZeros()
+			if got != tc.want {
+				t.Errorf("trailingZeros({hi: 0x%016x, lo: 0x%016x}) = %d, want %d",
+					tc.val.hi, tc.val.lo, got, tc.want)
+			}
+		})
+	}
+}
