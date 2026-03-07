@@ -1,5 +1,5 @@
 # ribbonGo
-
+[![GoDoc](https://godoc.org/github.com/RibbonGo/ribbonGo?status.svg)](https://godoc.org/github.com/RibbonGo/ribbonGo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A high-performance **Ribbon filter** implementation in Go — the space-efficient probabilistic data structure that is **practically smaller than Bloom and Xor filters**.
@@ -40,7 +40,7 @@ Ribbon filters are ideal for **read-heavy, write-once** workloads — LSM-tree e
 ### Installation
 
 ```bash
-go get github.com/ribnonGo/ribbon
+go get github.com/RibbonGo/ribbonGo
 ```
 
 Requires **Go 1.25+**.
@@ -54,7 +54,7 @@ import (
     "fmt"
     "log"
 
-    "github.com/ribnonGo/ribbon"
+    "github.com/RibbonGo/ribbonGo"
 )
 
 func main() {
@@ -310,8 +310,8 @@ Contributions are welcome! This project follows the paper's design closely — p
 ### Getting Started
 
 ```bash
-git clone https://github.com/ribnonGo/ribbon.git
-cd ribbon
+git clone https://github.com/RibbonGo/ribbonGo.git
+cd ribbonGo
 go test ./...
 ```
 
