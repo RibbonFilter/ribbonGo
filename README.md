@@ -1,5 +1,5 @@
 # ribbonGo
-
+[![GoDoc](https://godoc.org/github.com/RibbonGo/ribbonGo?status.svg)](https://godoc.org/github.com/RibbonGo/ribbonGo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 A high-performance **Ribbon filter** implementation in Go — the space-efficient probabilistic data structure that is **practically smaller than Bloom and Xor filters**.
