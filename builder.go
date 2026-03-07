@@ -1,4 +1,4 @@
-package ribbon
+package ribbonGo
 
 import "math"
 
