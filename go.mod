@@ -1,4 +1,4 @@
-module github.com/dhruvil/ribbon
+module github.com/ribnonGo/ribbon
 
 go 1.25
 
