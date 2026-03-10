@@ -1,4 +1,4 @@
-module github.com/RibbonGo/ribbonGo
+module github.com/RibbonFilter/ribbonGo
 
 go 1.25
 
