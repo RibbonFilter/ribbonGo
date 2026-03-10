@@ -87,11 +87,11 @@ type filter struct {
 //     a naive 0..w loop (~w/2 iterations for random coefficient rows).
 //
 // [RocksDB: SimpleFilterQuery in ribbon_alg.h]
-func (f *filter) contains(key []byte) bool {
+func (f *filter) contains(key string) bool {
 	if f.hasher.numStarts == 0 {
 		return false
 	}
-	h := f.hasher.keyHash(key)
+	h := f.hasher.keyHashString(key)
 	return f.containsHash(h)
 }
 

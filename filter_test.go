@@ -12,12 +12,12 @@ import (
 // TEST HELPERS
 // =============================================================================
 
-// generateKeys creates numKeys deterministic byte-slice keys with the
+// generateKeys creates numKeys deterministic string keys with the
 // given prefix. Each key is of the form "<prefix>_<index>".
-func generateKeys(prefix string, numKeys int) [][]byte {
-	keys := make([][]byte, numKeys)
+func generateKeys(prefix string, numKeys int) []string {
+	keys := make([]string, numKeys)
 	for i := range keys {
-		keys[i] = []byte(fmt.Sprintf("%s_%d", prefix, i))
+		keys[i] = fmt.Sprintf("%s_%d", prefix, i)
 	}
 	return keys
 }
@@ -26,7 +26,7 @@ func generateKeys(prefix string, numKeys int) [][]byte {
 func generateHashes(prefix string, numKeys int) []uint64 {
 	hashes := make([]uint64, numKeys)
 	for i := range hashes {
-		hashes[i] = xxh3.Hash([]byte(fmt.Sprintf("%s_%d", prefix, i)))
+		hashes[i] = xxh3.HashString(fmt.Sprintf("%s_%d", prefix, i))
 	}
 	return hashes
 }
@@ -99,7 +99,7 @@ func TestBuild_Empty(t *testing.T) {
 			}
 
 			// Must return false for any query.
-			if f.contains([]byte("anything")) {
+			if f.contains("anything") {
 				t.Error("empty filter should always return false")
 			}
 			if f.containsHash(12345) {
@@ -118,7 +118,7 @@ func TestBuild_SingleKey(t *testing.T) {
 	// A filter with a single key must find that key and reject most others.
 	for _, cfg := range allConfigs() {
 		t.Run(configName(cfg), func(t *testing.T) {
-			keys := [][]byte{[]byte("the_one_key")}
+			keys := []string{"the_one_key"}
 
 			f, err := buildFilter(keys, cfg)
 			if err != nil {
@@ -133,7 +133,7 @@ func TestBuild_SingleKey(t *testing.T) {
 			fps := 0
 			const numProbes = 10000
 			for i := 0; i < numProbes; i++ {
-				if f.contains([]byte(fmt.Sprintf("other_key_%d", i))) {
+				if f.contains(fmt.Sprintf("other_key_%d", i)) {
 					fps++
 				}
 			}
@@ -157,7 +157,7 @@ func TestBuild_InvalidConfig_CoeffBits(t *testing.T) {
 					t.Errorf("Build with CoeffBits=%d should panic", w)
 				}
 			}()
-			buildFilter([][]byte{[]byte("key")}, Config{
+			buildFilter([]string{"key"}, Config{
 				CoeffBits:  w,
 				ResultBits: 7,
 			})
@@ -173,7 +173,7 @@ func TestBuild_InvalidConfig_ResultBits(t *testing.T) {
 					t.Errorf("Build with ResultBits=%d should panic", r)
 				}
 			}()
-			buildFilter([][]byte{[]byte("key")}, Config{
+			buildFilter([]string{"key"}, Config{
 				CoeffBits:  128,
 				ResultBits: r,
 			})
@@ -256,7 +256,7 @@ func TestContains_EmptyFilter(t *testing.T) {
 	}
 
 	for i := 0; i < 1000; i++ {
-		key := []byte(fmt.Sprintf("probe_%d", i))
+		key := fmt.Sprintf("probe_%d", i)
 		if f.contains(key) {
 			t.Fatalf("empty filter returned true for %q", key)
 		}
@@ -282,7 +282,7 @@ func TestContainsHash_MatchesContains(t *testing.T) {
 
 			// Check inserted keys.
 			for _, key := range keys {
-				got := f.containsHash(xxh3.Hash(key))
+				got := f.containsHash(xxh3.HashString(key))
 				want := f.contains(key)
 				if got != want {
 					t.Fatalf("ContainsHash mismatch for key %q: got=%v, want=%v",
@@ -292,8 +292,8 @@ func TestContainsHash_MatchesContains(t *testing.T) {
 
 			// Check non-member keys.
 			for i := 0; i < 1000; i++ {
-				key := []byte(fmt.Sprintf("non_member_%d", i))
-				got := f.containsHash(xxh3.Hash(key))
+				key := fmt.Sprintf("non_member_%d", i)
+				got := f.containsHash(xxh3.HashString(key))
 				want := f.contains(key)
 				if got != want {
 					t.Fatalf("ContainsHash mismatch for non-member %q: got=%v, want=%v",
@@ -353,7 +353,7 @@ func TestContains_FalsePositiveRate(t *testing.T) {
 				// Query 1,000,000 non-member keys.
 				fps := 0
 				for i := 0; i < numNonMembers; i++ {
-					key := []byte(fmt.Sprintf("fpr_non_member_%d", i))
+					key := fmt.Sprintf("fpr_non_member_%d", i)
 					if f.contains(key) {
 						fps++
 					}
@@ -410,7 +410,7 @@ func TestContains_FalsePositiveRate_AllResultBits(t *testing.T) {
 
 			fps := 0
 			for i := 0; i < numNonMembers; i++ {
-				if f.contains([]byte(fmt.Sprintf("fpr_rbits_non_%d", i))) {
+				if f.contains(fmt.Sprintf("fpr_rbits_non_%d", i)) {
 					fps++
 				}
 			}
@@ -585,7 +585,7 @@ func TestBuild_TightOverhead(t *testing.T) {
 	h := newStandardHasher(cfg.CoeffBits, 0, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	hashes := make([]uint64, numKeys)
 	for i, key := range keys {
-		hashes[i] = h.keyHash(key)
+		hashes[i] = h.keyHashString(key)
 	}
 
 	// Use a very tight overhead ratio via the internal override.
@@ -625,7 +625,7 @@ func TestBuild_MaxSeedsExhausted(t *testing.T) {
 	h := newStandardHasher(cfg.CoeffBits, 0, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	hashes := make([]uint64, len(keys))
 	for i, key := range keys {
-		hashes[i] = h.keyHash(key)
+		hashes[i] = h.keyHashString(key)
 	}
 
 	// Use an extremely tight overhead ratio via the internal override.
@@ -681,7 +681,7 @@ func TestBuild_W32_Correctness(t *testing.T) {
 			fps := 0
 			const numProbes = 100000
 			for i := 0; i < numProbes; i++ {
-				if f.contains([]byte(fmt.Sprintf("w32_non_%d", i))) {
+				if f.contains(fmt.Sprintf("w32_non_%d", i)) {
 					fps++
 				}
 			}
