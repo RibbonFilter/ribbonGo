@@ -36,10 +36,10 @@ import (
 
 // benchBuildFilter constructs a Filter with the given parameters.
 // Returns the filter and the original keys (for true-positive queries).
-func benchBuildFilter(w uint32, numKeys int) (*filter, [][]byte) {
-	keys := make([][]byte, numKeys)
+func benchBuildFilter(w uint32, numKeys int) (*filter, []string) {
+	keys := make([]string, numKeys)
 	for i := range keys {
-		keys[i] = []byte(fmt.Sprintf("bench_filter_key_%d", i))
+		keys[i] = fmt.Sprintf("bench_filter_key_%d", i)
 	}
 
 	cfg := Config{
@@ -57,9 +57,9 @@ func benchBuildFilter(w uint32, numKeys int) (*filter, [][]byte) {
 // benchBuildFilterHashes constructs a Filter and returns pre-computed hashes
 // for both member and non-member keys. Used by ContainsHash benchmarks.
 func benchBuildFilterHashes(w uint32, numKeys int) (*filter, []uint64, []uint64) {
-	keys := make([][]byte, numKeys)
+	keys := make([]string, numKeys)
 	for i := range keys {
-		keys[i] = []byte(fmt.Sprintf("bench_hash_key_%d", i))
+		keys[i] = fmt.Sprintf("bench_hash_key_%d", i)
 	}
 
 	cfg := Config{
@@ -75,13 +75,13 @@ func benchBuildFilterHashes(w uint32, numKeys int) (*filter, []uint64, []uint64)
 	// Pre-compute member hashes.
 	memberHashes := make([]uint64, numKeys)
 	for i, key := range keys {
-		memberHashes[i] = xxh3.Hash(key)
+		memberHashes[i] = xxh3.HashString(key)
 	}
 
 	// Pre-compute non-member hashes.
 	nonMemberHashes := make([]uint64, numKeys)
 	for i := range nonMemberHashes {
-		nonMemberHashes[i] = xxh3.Hash([]byte(fmt.Sprintf("bench_nonmember_%d", i)))
+		nonMemberHashes[i] = xxh3.HashString(fmt.Sprintf("bench_nonmember_%d", i))
 	}
 
 	return f, memberHashes, nonMemberHashes
@@ -183,9 +183,9 @@ func BenchmarkContains_TrueNegative(b *testing.B) {
 			f, _ := benchBuildFilter(w, numKeys)
 
 			// Pre-generate non-member keys.
-			probes := make([][]byte, 4096)
+			probes := make([]string, 4096)
 			for i := range probes {
-				probes[i] = []byte(fmt.Sprintf("bench_negative_%d", i))
+				probes[i] = fmt.Sprintf("bench_negative_%d", i)
 			}
 			mask := len(probes) - 1 // power of 2 for cheap modulo
 
@@ -309,9 +309,9 @@ func BenchmarkBuildFilter(b *testing.B) {
 		for _, numKeys := range []int{1000, 10000, 100000} {
 			name := fmt.Sprintf("w=%d/n=%d", w, numKeys)
 			b.Run(name, func(b *testing.B) {
-				keys := make([][]byte, numKeys)
+				keys := make([]string, numKeys)
 				for i := range keys {
-					keys[i] = []byte(fmt.Sprintf("bench_build_key_%d", i))
+					keys[i] = fmt.Sprintf("bench_build_key_%d", i)
 				}
 
 				cfg := Config{
@@ -372,7 +372,7 @@ func BenchmarkBuildFromHashes(b *testing.B) {
 			b.Run(name, func(b *testing.B) {
 				hashes := make([]uint64, numKeys)
 				for i := range hashes {
-					hashes[i] = xxh3.Hash([]byte(fmt.Sprintf("bench_build_hash_%d", i)))
+					hashes[i] = xxh3.HashString(fmt.Sprintf("bench_build_hash_%d", i))
 				}
 
 				cfg := Config{

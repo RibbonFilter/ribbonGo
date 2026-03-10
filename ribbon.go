@@ -134,12 +134,7 @@ func NewWithConfig(cfg Config) *Ribbon {
 //
 // Returns ErrConstructionFailed if banding fails for all seed retries.
 func (r *Ribbon) Build(keys []string) error {
-	byteKeys := make([][]byte, len(keys))
-	for i, k := range keys {
-		byteKeys[i] = []byte(k)
-	}
-
-	f, err := buildFilter(byteKeys, r.cfg)
+	f, err := buildFilter(keys, r.cfg)
 	if err != nil {
 		return err
 	}
@@ -161,5 +156,5 @@ func (r *Ribbon) Contains(key string) bool {
 	if r.f == nil {
 		return false
 	}
-	return r.f.containsHash(xxh3.Hash([]byte(key)))
+	return r.f.containsHash(xxh3.HashString(key))
 }

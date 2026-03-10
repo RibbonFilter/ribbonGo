@@ -146,6 +146,10 @@ type hasher interface {
 	// Called once per key; the result is stored and reused across seed attempts.
 	keyHash(key []byte) uint64
 
+	// keyHashString is like keyHash but accepts a string directly,
+	// avoiding the []byte allocation that string→[]byte conversion incurs.
+	keyHashString(key string) uint64
+
 	// setOrdinalSeed sets the hash seed from a small ordinal value (0..255).
 	// Internally converts to a well-distributed raw seed.
 	setOrdinalSeed(ordinal uint32)
@@ -308,6 +312,13 @@ func newStandardHasher(coeffBits uint32, numStarts uint32, resultBits uint, firs
 // RocksDB's on-disk filter blocks.
 func (sh *standardHasher) keyHash(key []byte) uint64 {
 	return xxh3.Hash(key)
+}
+
+// keyHashString hashes a string key directly using XXH3 without
+// allocating a []byte copy. Uses xxh3.HashString which reads the
+// string's underlying bytes via unsafe.Pointer.
+func (sh *standardHasher) keyHashString(key string) uint64 {
+	return xxh3.HashString(key)
 }
 
 // --- Seed management ---

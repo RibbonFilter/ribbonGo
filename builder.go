@@ -40,7 +40,7 @@ func defaultConfig() Config {
 // Returns ErrConstructionFailed if banding fails for all seeds.
 //
 // [RocksDB: Standard128RibbonBitsBuilder::Finish in filter_policy.cc]
-func buildFilter(keys [][]byte, cfg Config) (*filter, error) {
+func buildFilter(keys []string, cfg Config) (*filter, error) {
 	validateConfig(cfg)
 	cfg = normalizeConfig(cfg)
 
@@ -52,10 +52,11 @@ func buildFilter(keys [][]byte, cfg Config) (*filter, error) {
 	// Phase 1: hash all keys once with XXH3.
 	// The stored hashes are reused across all seed attempts, amortising
 	// the cost of the expensive XXH3 computation.
+	// Uses keyHashString to avoid string→[]byte allocation per key.
 	h := newStandardHasher(cfg.CoeffBits, 0, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	hashes := make([]uint64, numKeys)
 	for i, key := range keys {
-		hashes[i] = h.keyHash(key)
+		hashes[i] = h.keyHashString(key)
 	}
 
 	return buildCore(hashes, cfg)
