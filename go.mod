@@ -1,6 +1,6 @@
 module github.com/RibbonFilter/ribbonGo
 
-go 1.25
+go 1.24.2
 
 require github.com/zeebo/xxh3 v1.1.0
 
