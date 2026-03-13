@@ -130,6 +130,143 @@ func TestNewWithConfig_InvalidResultBits(t *testing.T) {
 }
 
 // =============================================================================
+// NEW FROM KEYS — one-step constructor tests
+// =============================================================================
+
+func TestNewFromKeys(t *testing.T) {
+	const numKeys = 1000
+	keys := generateStringKeys("from_keys", numKeys)
+
+	r, err := NewFromKeys(keys)
+	if err != nil {
+		t.Fatalf("NewFromKeys failed: %v", err)
+	}
+	if r == nil {
+		t.Fatal("NewFromKeys returned nil Ribbon")
+	}
+
+	// Verify default config.
+	if r.cfg.CoeffBits != 128 {
+		t.Errorf("cfg.CoeffBits = %d, want 128", r.cfg.CoeffBits)
+	}
+	if r.cfg.ResultBits != 7 {
+		t.Errorf("cfg.ResultBits = %d, want 7", r.cfg.ResultBits)
+	}
+
+	// All inserted keys must be found (zero false negatives).
+	for i, key := range keys {
+		if !r.Contains(key) {
+			t.Fatalf("false negative for key %d: %q", i, key)
+		}
+	}
+}
+
+func TestNewFromKeys_Empty(t *testing.T) {
+	r, err := NewFromKeys(nil)
+	if err != nil {
+		t.Fatalf("NewFromKeys(nil) failed: %v", err)
+	}
+	if r.Contains("anything") {
+		t.Error("empty filter should return false")
+	}
+}
+
+func TestNewFromKeys_EmptySlice(t *testing.T) {
+	r, err := NewFromKeys([]string{})
+	if err != nil {
+		t.Fatalf("NewFromKeys([]string{}) failed: %v", err)
+	}
+	if r.Contains("probe") {
+		t.Error("empty filter should return false")
+	}
+}
+
+func TestNewFromKeysWithConfig(t *testing.T) {
+	const numKeys = 1000
+
+	for _, w := range []uint32{32, 64, 128} {
+		for _, fcao := range []bool{true, false} {
+			name := fmt.Sprintf("w=%d/fcao=%v", w, fcao)
+			t.Run(name, func(t *testing.T) {
+				cfg := Config{
+					CoeffBits:           w,
+					ResultBits:          7,
+					FirstCoeffAlwaysOne: fcao,
+				}
+				keys := generateStringKeys("from_keys_cfg", numKeys)
+
+				r, err := NewFromKeysWithConfig(cfg, keys)
+				if err != nil {
+					t.Fatalf("NewFromKeysWithConfig failed: %v", err)
+				}
+				if r == nil {
+					t.Fatal("NewFromKeysWithConfig returned nil")
+				}
+				if r.cfg.CoeffBits != w {
+					t.Errorf("cfg.CoeffBits = %d, want %d", r.cfg.CoeffBits, w)
+				}
+
+				for i, key := range keys {
+					if !r.Contains(key) {
+						t.Fatalf("false negative for key %d: %q", i, key)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestNewFromKeysWithConfig_InvalidConfig(t *testing.T) {
+	defer func() {
+		if rec := recover(); rec == nil {
+			t.Error("NewFromKeysWithConfig with invalid config should panic")
+		}
+	}()
+	NewFromKeysWithConfig(Config{CoeffBits: 99, ResultBits: 7}, []string{"key"})
+}
+
+func TestNewFromKeysWithConfig_Empty(t *testing.T) {
+	cfg := Config{
+		CoeffBits:           64,
+		ResultBits:          8,
+		FirstCoeffAlwaysOne: true,
+	}
+	r, err := NewFromKeysWithConfig(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewFromKeysWithConfig(nil) failed: %v", err)
+	}
+	if r.Contains("anything") {
+		t.Error("empty filter should return false")
+	}
+}
+
+func TestNewFromKeys_EquivalentToNewPlusBuild(t *testing.T) {
+	// NewFromKeys should produce the same results as New() + Build().
+	const numKeys = 500
+	keys := generateStringKeys("equiv", numKeys)
+
+	r1, err := NewFromKeys(keys)
+	if err != nil {
+		t.Fatalf("NewFromKeys failed: %v", err)
+	}
+
+	r2 := New()
+	if err := r2.Build(keys); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	// Both filters must agree on all inserted keys.
+	for _, key := range keys {
+		got1 := r1.Contains(key)
+		got2 := r2.Contains(key)
+		if got1 != got2 {
+			t.Fatalf("disagreement on key %q: NewFromKeys=%v, New+Build=%v",
+				key, got1, got2)
+		}
+	}
+}
+
+// =============================================================================
 // BUILD — construction via the public API
 // =============================================================================
 
