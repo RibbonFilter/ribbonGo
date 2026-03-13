@@ -123,6 +123,51 @@ func NewWithConfig(cfg Config) *Ribbon {
 	return &Ribbon{cfg: normalizeConfig(cfg)}
 }
 
+// NewFromKeys creates a Ribbon filter with default settings and builds it
+// from the given keys in a single step.
+//
+// This is a convenience function equivalent to:
+//
+//	r := New()
+//	err := r.Build(keys)
+//
+// Keys must be unique: duplicate keys produce identical equations
+// regardless of the hash seed, causing guaranteed construction failure.
+// If duplicates may be present, the caller should de-duplicate first.
+//
+// Returns ErrConstructionFailed if banding fails for all seed retries.
+func NewFromKeys(keys []string) (*Ribbon, error) {
+	r := New()
+	if err := r.Build(keys); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// NewFromKeysWithConfig creates a Ribbon filter with custom parameters
+// and builds it from the given keys in a single step.
+//
+// This is a convenience function equivalent to:
+//
+//	r := NewWithConfig(cfg)
+//	err := r.Build(keys)
+//
+// Panics if Config.CoeffBits is not 32, 64, or 128, or if
+// Config.ResultBits is not in [1, 8].
+//
+// Keys must be unique: duplicate keys produce identical equations
+// regardless of the hash seed, causing guaranteed construction failure.
+// If duplicates may be present, the caller should de-duplicate first.
+//
+// Returns ErrConstructionFailed if banding fails for all seed retries.
+func NewFromKeysWithConfig(cfg Config, keys []string) (*Ribbon, error) {
+	r := NewWithConfig(cfg)
+	if err := r.Build(keys); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
 // Build constructs the filter from the given keys.
 //
 // Keys must be unique: duplicate keys produce identical equations
