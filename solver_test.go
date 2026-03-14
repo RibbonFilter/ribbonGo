@@ -10,7 +10,7 @@ import (
 // =============================================================================
 
 // makeBanderFromSlots creates a standardBander with pre-set slot data,
-// bypassing the normal Add() path. This lets us construct hand-crafted
+// bypassing the normal add() path. This lets us construct hand-crafted
 // upper-triangular matrices with known mathematical solutions.
 func makeBanderFromSlots(numSlots, coeffBits uint32, slots []bandingSlot) *standardBander {
 	b := newStandardBander(numSlots, coeffBits, true)
@@ -548,7 +548,7 @@ func TestBackSubstitute_FullPipeline(t *testing.T) {
 						kh := h.keyHash([]byte(fmt.Sprintf("solver_test_key_%d", i)))
 						hashes[i] = kh
 						hr := h.derive(kh)
-						if !bd.Add(hr) {
+						if !bd.add(hr) {
 							allOk = false
 							break
 						}
@@ -609,7 +609,7 @@ func TestBackSubstitute_FullPipeline_LargeScale(t *testing.T) {
 			kh := h.keyHash([]byte(fmt.Sprintf("large_key_%d", i)))
 			hashes[i] = kh
 			hr := h.derive(kh)
-			if !bd.Add(hr) {
+			if !bd.add(hr) {
 				allOk = false
 				break
 			}
@@ -661,7 +661,7 @@ func TestBackSubstitute_FalsePositiveRate(t *testing.T) {
 		for i := 0; i < numKeys; i++ {
 			kh := h.keyHash([]byte(fmt.Sprintf("fp_key_%d", i)))
 			hr := h.derive(kh)
-			if !bd.Add(hr) {
+			if !bd.add(hr) {
 				allOk = false
 				break
 			}
@@ -745,7 +745,7 @@ func TestBackSubstitute_VerifyEquations(t *testing.T) {
 				for i := 0; i < numKeys; i++ {
 					kh := h.keyHash([]byte(fmt.Sprintf("verify_key_%d", i)))
 					hr := h.derive(kh)
-					if !bd.Add(hr) {
+					if !bd.add(hr) {
 						allOk = false
 						break
 					}

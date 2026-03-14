@@ -130,26 +130,15 @@ func buildCore(hashes []uint64, cfg Config) (*filter, error) {
 	// Create the bander (allocated once, reset between retries).
 	bd := newStandardBander(numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
 
-	// Pre-allocate the hashResult buffer (reused across all seed attempts).
-	// Each hashResult is 24 bytes; for 100K keys this is ~2.4 MB — acceptable
-	// for a one-time construction cost, and AddRange's software-pipelined
-	// prefetching more than pays for it on large filters.
-	hrs := make([]hashResult, numKeys)
-
 	// Seed-retry loop.
 	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
-
-		// Phase 2: derive (start, coeffRow, result) for all keys.
-		for i, kh := range hashes {
-			hrs[i] = h.derive(kh)
-		}
 
 		// Reset the bander's slot arrays for this attempt.
 		bd.reset()
 
 		// Attempt banding: on-the-fly Gaussian elimination over GF(2).
-		if bd.AddRange(hrs) {
+		if bd.addRange(hashes, h) {
 			// Success! Back-substitute to compute the solution vector S.
 			sol := backSubstitute(bd, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
@@ -404,15 +393,12 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 
 	h := newStandardHasher(cfg.CoeffBits, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	bd := newStandardBander(numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
-	hrs := make([]hashResult, numKeys)
 
 	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
-		for i, kh := range hashes {
-			hrs[i] = h.derive(kh)
-		}
+		
 		bd.reset()
-		if bd.AddRange(hrs) {
+		if bd.addRange(hashes, h) {
 			sol := backSubstitute(bd, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
 		}

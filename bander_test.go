@@ -35,6 +35,16 @@ func precomputedHashResults(h *standardHasher, n int) []hashResult {
 	return results
 }
 
+// precomputedKeyHashes generates N deterministic Phase 1 (XXH3) hashes.
+// Used by tests that exercise the fused addRange(hashes, hasher) path.
+func precomputedKeyHashes(h *standardHasher, n int) []uint64 {
+	hashes := make([]uint64, n)
+	for i := range hashes {
+		hashes[i] = h.keyHash([]byte(fmt.Sprintf("bander_key_%d", i)))
+	}
+	return hashes
+}
+
 // =============================================================================
 // CONSTRUCTOR TESTS
 // =============================================================================
@@ -98,7 +108,7 @@ func TestAdd_SingleInsertion(t *testing.T) {
 				kh := h.keyHash([]byte("single_key"))
 				hr := h.derive(kh)
 
-				ok := bd.Add(hr)
+				ok := bd.add(hr)
 				if !ok {
 					t.Fatal("Add returned false for single key insertion")
 				}
@@ -134,7 +144,7 @@ func TestAdd_MultipleNonConflicting(t *testing.T) {
 				for i := 0; i < numKeys; i++ {
 					kh := h.keyHash([]byte(fmt.Sprintf("key_%d", i)))
 					hr := h.derive(kh)
-					if bd.Add(hr) {
+					if bd.add(hr) {
 						successes++
 					}
 				}
@@ -170,12 +180,12 @@ func TestAdd_RedundantEquation(t *testing.T) {
 				hr := h.derive(kh)
 
 				// First insertion succeeds.
-				if !bd.Add(hr) {
+				if !bd.add(hr) {
 					t.Fatal("first Add failed")
 				}
 
 				// Second insertion of the same equation: c XOR c = 0, r XOR r = 0.
-				ok := bd.Add(hr)
+				ok := bd.add(hr)
 				if ok {
 					t.Error("second Add of same hashResult should return false (redundant)")
 				}
@@ -210,11 +220,11 @@ func TestAdd_ContradictoryEquation(t *testing.T) {
 				hr1 := hashResult{start: 100, coeffRow: coeff, result: 42}
 				hr2 := hashResult{start: 100, coeffRow: coeff, result: 99}
 
-				if !bd.Add(hr1) {
+				if !bd.add(hr1) {
 					t.Fatal("first Add failed")
 				}
 
-				ok := bd.Add(hr2)
+				ok := bd.add(hr2)
 				if ok {
 					t.Error("contradictory equation should return false")
 				}
@@ -255,14 +265,14 @@ func TestAdd_MultiStepCollisionChain(t *testing.T) {
 				result:   7,
 			}
 
-			if !bd.Add(eq1) {
+			if !bd.add(eq1) {
 				t.Fatal("eq1 Add failed")
 			}
-			if !bd.Add(eq2) {
+			if !bd.add(eq2) {
 				t.Fatal("eq2 Add failed")
 			}
 
-			ok := bd.Add(eq3)
+			ok := bd.add(eq3)
 			if ok {
 				t.Error("eq3 should fail (redundant after multi-step chain)")
 			}
@@ -290,13 +300,13 @@ func TestAdd_ChainResolves(t *testing.T) {
 				result:   5,
 			}
 
-			if !bd.Add(eq1) {
+			if !bd.add(eq1) {
 				t.Fatal("eq1 Add failed")
 			}
 			// eq2 collides with eq1 at col 10. XOR: 0b0101 ^ 0b0111 = 0b0010.
 			// New pivot at col 11 (bit 1). Shift right by 1 → coeff=0b0001.
 			// Slot 11 is empty → store successfully.
-			if !bd.Add(eq2) {
+			if !bd.add(eq2) {
 				t.Fatal("eq2 should succeed after resolving collision chain")
 			}
 
@@ -329,7 +339,7 @@ func TestAdd_128BitCoefficients(t *testing.T) {
 				result:   10,
 			}
 
-			if !bd.Add(eq1) {
+			if !bd.add(eq1) {
 				t.Fatal("128-bit coefficient Add failed")
 			}
 
@@ -361,12 +371,12 @@ func TestAdd_128BitCollisionInHiHalf(t *testing.T) {
 		result:   7,
 	}
 
-	if !bd.Add(eq1) {
+	if !bd.add(eq1) {
 		t.Fatal("eq1 failed")
 	}
 	// eq2 XOR eq1: coeff = {hi:1, lo:0}. TrailingZeros = 64.
 	// Pivot at col 5 + 64 = 69. Should succeed (slot 69 is empty).
-	if !bd.Add(eq2) {
+	if !bd.add(eq2) {
 		t.Fatal("eq2 should succeed (pivot at col 69 in hi half)")
 	}
 	if bd.getSlot(69).coeffRow.isZero() {
@@ -378,9 +388,9 @@ func TestAdd_128BitCollisionInHiHalf(t *testing.T) {
 // CROSS-VALIDATION: Add vs slowAdd
 // =============================================================================
 
-func TestAdd_MatchesSlowAdd(t *testing.T) {
-	// Verify that the optimised Add() produces the exact same outcome
-	// (success/failure) and the exact same slot contents as slowAdd()
+func TestAdd_MatchesSlowadd(t *testing.T) {
+	// Verify that the optimised add() produces the exact same outcome
+	// (success/failure) and the exact same slot contents as slowadd()
 	// for a large number of keys across all 6 configurations.
 	//
 	// This catches any divergence introduced by the firstCoeffAlwaysOne
@@ -402,11 +412,11 @@ func TestAdd_MatchesSlowAdd(t *testing.T) {
 				bdSlow := newStandardBander(numSlots, w, fcao)
 
 				for i, hr := range hashes {
-					gotFast := bdFast.Add(hr)
-					gotSlow := bdSlow.slowAdd(hr)
+					gotFast := bdFast.add(hr)
+					gotSlow := bdSlow.slowadd(hr)
 
 					if gotFast != gotSlow {
-						t.Fatalf("key %d: Add()=%v, slowAdd()=%v (start=%d)",
+						t.Fatalf("key %d: add()=%v, slowadd()=%v (start=%d)",
 							i, gotFast, gotSlow, hr.start)
 					}
 				}
@@ -429,9 +439,9 @@ func TestAdd_MatchesSlowAdd(t *testing.T) {
 // ADD RANGE — batched insertion with prefetching
 // =============================================================================
 
-func TestAddRange_MatchesAdd(t *testing.T) {
-	// Verify that AddRange produces the exact same slot state as calling
-	// Add() in a loop for the same inputs.
+func TestAddRange_Matchesadd(t *testing.T) {
+	// Verify that addRange produces the exact same slot state as calling
+	// add() in a loop for the same inputs.
 	for _, w := range []uint32{32, 64, 128} {
 		for _, fcao := range []bool{true, false} {
 			name := fmt.Sprintf("w=%d/fcao=%v", w, fcao)
@@ -442,21 +452,22 @@ func TestAddRange_MatchesAdd(t *testing.T) {
 				h.setOrdinalSeed(0)
 
 				const numKeys = 5000
-				hashes := precomputedHashResults(h, numKeys)
+				keyHashes := precomputedKeyHashes(h, numKeys)
+				hashResults := precomputedHashResults(h, numKeys)
 
-				// Run Add() in a loop.
+				// Run add() in a loop.
 				bdAdd := newStandardBander(numSlots, w, fcao)
 				addOk := true
-				for _, hr := range hashes {
-					if !bdAdd.Add(hr) {
+				for _, hr := range hashResults {
+					if !bdAdd.add(hr) {
 						addOk = false
 						break
 					}
 				}
 
-				// Run AddRange() on the full batch.
+				// Run addRange() on the full batch (fused derive+add).
 				bdRange := newStandardBander(numSlots, w, fcao)
-				rangeOk := bdRange.AddRange(hashes)
+				rangeOk := bdRange.addRange(keyHashes, h)
 
 				if addOk != rangeOk {
 					t.Fatalf("Add-loop=%v, AddRange=%v", addOk, rangeOk)
@@ -476,8 +487,8 @@ func TestAddRange_MatchesAdd(t *testing.T) {
 	}
 }
 
-func TestAddRange_MatchesSlowAddRange(t *testing.T) {
-	// Cross-validate AddRange against slowAddRange across all 6 configs.
+func TestAddRange_MatchesSlowaddRange(t *testing.T) {
+	// Cross-validate addRange against slowaddRange across all 6 configs.
 	for _, w := range []uint32{32, 64, 128} {
 		for _, fcao := range []bool{true, false} {
 			name := fmt.Sprintf("w=%d/fcao=%v", w, fcao)
@@ -488,16 +499,17 @@ func TestAddRange_MatchesSlowAddRange(t *testing.T) {
 				h.setOrdinalSeed(0)
 
 				const numKeys = 5000
-				hashes := precomputedHashResults(h, numKeys)
+				keyHashes := precomputedKeyHashes(h, numKeys)
+				hashResults := precomputedHashResults(h, numKeys)
 
 				bdFast := newStandardBander(numSlots, w, fcao)
 				bdSlow := newStandardBander(numSlots, w, fcao)
 
-				gotFast := bdFast.AddRange(hashes)
-				gotSlow := bdSlow.slowAddRange(hashes)
+				gotFast := bdFast.addRange(keyHashes, h)
+				gotSlow := bdSlow.slowaddRange(hashResults)
 
 				if gotFast != gotSlow {
-					t.Fatalf("AddRange()=%v, slowAddRange()=%v", gotFast, gotSlow)
+					t.Fatalf("addRange()=%v, slowaddRange()=%v", gotFast, gotSlow)
 				}
 
 				for i := uint32(0); i < numSlots; i++ {
@@ -515,17 +527,17 @@ func TestAddRange_MatchesSlowAddRange(t *testing.T) {
 
 func TestAddRange_Empty(t *testing.T) {
 	bd := newStandardBander(100, 64, true)
-	if !bd.AddRange(nil) {
-		t.Error("AddRange(nil) should return true")
+	if !bd.addRange(nil, nil) {
+		t.Error("addRange(nil) should return true")
 	}
-	if !bd.AddRange([]hashResult{}) {
-		t.Error("AddRange(empty) should return true")
+	if !bd.addRange([]uint64{}, nil) {
+		t.Error("addRange(empty) should return true")
 	}
 }
 
 func TestAddRange_StopsOnFailure(t *testing.T) {
 	// Verify that AddRange returns false on failure, and that
-	// the state matches calling Add() key-by-key with the same
+	// the state matches calling add() key-by-key with the same
 	// stop-on-first-failure semantics.
 	for _, w := range []uint32{64, 128} {
 		name := fmt.Sprintf("w=%d", w)
@@ -539,23 +551,24 @@ func TestAddRange_StopsOnFailure(t *testing.T) {
 			// Try seeds until we find one that fails mid-batch.
 			for seed := uint32(0); seed < 100; seed++ {
 				h.setOrdinalSeed(seed)
-				hashes := precomputedHashResults(h, numKeys)
+				keyHashes := precomputedKeyHashes(h, numKeys)
+				hashResults := precomputedHashResults(h, numKeys)
 
 				bdRange := newStandardBander(numSlots, w, true)
-				rangeOk := bdRange.AddRange(hashes)
+				rangeOk := bdRange.addRange(keyHashes, h)
 
-				// Replay with Add-loop using same stop-on-failure.
+				// Replay with add-loop using same stop-on-failure.
 				bdLoop := newStandardBander(numSlots, w, true)
 				loopOk := true
-				for _, hr := range hashes {
-					if !bdLoop.Add(hr) {
+				for _, hr := range hashResults {
+					if !bdLoop.add(hr) {
 						loopOk = false
 						break
 					}
 				}
 
 				if rangeOk != loopOk {
-					t.Fatalf("seed=%d: AddRange()=%v, Add-loop=%v", seed, rangeOk, loopOk)
+					t.Fatalf("seed=%d: addRange()=%v, Add-loop=%v", seed, rangeOk, loopOk)
 				}
 
 				// Verify identical state.
@@ -594,7 +607,7 @@ func TestReset(t *testing.T) {
 			for i := 0; i < 100; i++ {
 				kh := h.keyHash([]byte(fmt.Sprintf("reset_key_%d", i)))
 				hr := h.derive(kh)
-				bd.Add(hr)
+				bd.add(hr)
 			}
 
 			// Verify at least some slots are occupied.
@@ -620,7 +633,7 @@ func TestReset(t *testing.T) {
 			// Re-insertion after reset should succeed.
 			kh := h.keyHash([]byte("after_reset"))
 			hr := h.derive(kh)
-			if !bd.Add(hr) {
+			if !bd.add(hr) {
 				t.Error("Add failed after reset")
 			}
 		})
@@ -652,7 +665,7 @@ func TestAdd_SeedRetry(t *testing.T) {
 				for i := 0; i < numKeys; i++ {
 					kh := h.keyHash([]byte(fmt.Sprintf("retry_key_%d", i)))
 					hr := h.derive(kh)
-					if !bd.Add(hr) {
+					if !bd.add(hr) {
 						allOk = false
 						break
 					}
@@ -695,7 +708,7 @@ func TestAdd_SingleSlot(t *testing.T) {
 				t.Fatalf("expected start=0 with numStarts=1, got %d", hr.start)
 			}
 
-			if !bd.Add(hr) {
+			if !bd.add(hr) {
 				t.Error("Add failed for single-start bander")
 			}
 		})
@@ -712,7 +725,7 @@ func TestAdd_HandCraftedDirectInsertion(t *testing.T) {
 		result:   42,
 	}
 
-	if !bd.Add(hr) {
+	if !bd.add(hr) {
 		t.Fatal("Add failed")
 	}
 
@@ -738,7 +751,7 @@ func TestAdd_HandCraftedWithShift(t *testing.T) {
 		result:   7,
 	}
 
-	if !bd.Add(hr) {
+	if !bd.add(hr) {
 		t.Fatal("Add failed")
 	}
 
@@ -782,7 +795,7 @@ func TestAdd_SuccessRate(t *testing.T) {
 				for i := 0; i < numKeys; i++ {
 					kh := h.keyHash([]byte(fmt.Sprintf("stat_key_%d", i)))
 					hr := h.derive(kh)
-					if !bd.Add(hr) {
+					if !bd.add(hr) {
 						allOk = false
 						break
 					}
