@@ -221,7 +221,6 @@ func BenchmarkPaper_Query_Positive(b *testing.B) {
 
 				// Release the full key set to reduce memory pressure
 				// during the timed query loop.
-				keys = nil
 				runtime.GC()
 
 				mask := probeCount - 1
@@ -271,7 +270,6 @@ func BenchmarkPaper_Query_Negative(b *testing.B) {
 				}
 
 				// Release keys immediately — not needed for negative queries.
-				keys = nil
 				runtime.GC()
 
 				// Generate non-member probe keys.
@@ -326,7 +324,6 @@ func BenchmarkPaper_Space(b *testing.B) {
 				if err := rb.Build(keys); err != nil {
 					b.Fatal(err)
 				}
-				keys = nil
 
 				nf := float64(n)
 				numSlots := float64(rb.f.numSlots)
