@@ -54,7 +54,7 @@ func precomputedHashes(h *standardHasher, n int) []uint64 {
 //   (c) forceFirstCoeff branch replaced by pre-computed coeffOrMask.
 //   (d) resultBits shift replaced by pre-computed resultMask.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   fcao     ns/op   allocs/op
 //   ─────   ─────    ─────   ─────────
@@ -98,7 +98,7 @@ func BenchmarkDerive(b *testing.B) {
 //
 // Isolated cost of (hash ^ rawSeed) * kRehashFactor.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   ns/op   allocs/op
 //   ─────   ─────────
@@ -127,11 +127,11 @@ func BenchmarkRehash(b *testing.B) {
 //
 // Maps a 64-bit hash uniformly into [0, numStarts) via 128-bit multiply.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   ns/op   allocs/op
 //   ─────   ─────────
-//   0.40    0
+//   0.39    0
 //
 // Key observation: single math/bits.Mul64 — sub-nanosecond, fully inlined.
 // ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ func BenchmarkGetStart(b *testing.B) {
 // Derives the w-bit coefficient row from a rehashed hash. Contains a
 // 3-way switch on w and an optional |=1 for forceFirstCoeff.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   fcao     ns/op   allocs/op
 //   ─────   ─────    ─────   ─────────
@@ -212,12 +212,12 @@ func BenchmarkGetCoeffRow(b *testing.B) {
 //
 // Derives the r-bit fingerprint: multiply → byte-swap → mask.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   r-bits   ns/op   allocs/op
 //   ──────   ─────   ─────────
 //   r=1      0.39    0
-//   r=7      0.40    0
+//   r=7      0.39    0
 //   r=8      0.39    0
 //
 // Key observation: identical cost regardless of r — the mask is a
@@ -255,14 +255,14 @@ func BenchmarkGetResultRow(b *testing.B) {
 // Phase 1 cost: XXH3_64bits over the raw key bytes. Called once per key
 // (amortised across all seed attempts).
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Key size   ns/op    MB/s       allocs/op
 //   ────────   ─────    ────────   ─────────
-//   8 B        2.33     3,438      0
-//   32 B       3.24     9,888      0
-//   128 B      8.36     15,313     0
-//   1024 B     49.66    20,622     0
+//   8 B        2.32     3,449      0
+//   32 B       3.21     9,978      0
+//   128 B      8.41     15,229     0
+//   1024 B     49.27    20,786     0
 //
 // Key observations:
 //   • For typical filter keys (8–32 B), keyHash is now the dominant cost
@@ -299,12 +299,12 @@ func BenchmarkKeyHash(b *testing.B) {
 // Simulates a full seed-attempt pass over 100K pre-hashed keys.
 // Reports wall-clock time per pass and throughput in keys/op.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   ns/op     keys/op   ~keys/sec     allocs/op
 //   ─────   ───────   ───────   ──────────    ─────────
-//   w=64    39,142    100,000   ~2.56B        0
-//   w=128   38,730    100,000   ~2.58B        0
+//   w=64    38,480    100,000   ~2.60B        0
+//   w=128   38,720    100,000   ~2.58B        0
 //
 // Key observations:
 //   • ~0.39 ns/key in a tight loop — matches per-call BenchmarkDerive.
@@ -345,12 +345,12 @@ func BenchmarkDeriveThroughput(b *testing.B) {
 // Bijective mixing between small ordinal seeds and 64-bit raw seeds.
 // Called once per seed attempt (not per key), so not on the hot path.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Direction        ns/op   allocs/op
 //   ─────────        ─────   ─────────
 //   ordinalToRaw     0.39    0
-//   rawToOrdinal     0.39    0
+//   rawToOrdinal     0.38    0
 //
 // Key observation: multiply + XOR — sub-nanosecond, negligible.
 // ---------------------------------------------------------------------------

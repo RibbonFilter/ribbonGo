@@ -101,29 +101,29 @@ func benchBuildFilterHashes(w uint32, numKeys int) (*filter, []uint64, []uint64)
 // For short keys, XXH3 dominates. For long keys, XXH3 cost grows
 // linearly while the filter query cost stays constant.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys      ns/op   B/op   allocs/op
 //   ─────   ──────    ─────   ────   ─────────
-//   w=32    1,000     26.83   0      0
-//   w=32    10,000    36.77   0      0
-//   w=64    1,000     51.90   0      0
-//   w=64    10,000    53.86   0      0
-//   w=64    100,000   54.02   0      0
-//   w=128   1,000     80.32   0      0
-//   w=128   10,000    85.58   0      0
-//   w=128   100,000   86.41   0      0
+//   w=32    1,000     25.27   0      0
+//   w=32    10,000    35.16   0      0
+//   w=64    1,000     49.80   0      0
+//   w=64    10,000    51.97   0      0
+//   w=64    100,000   53.42   0      0
+//   w=128   1,000     78.70   0      0
+//   w=128   10,000    84.49   0      0
+//   w=128   100,000   84.75   0      0
 //
 // Key observations:
 //   • Zero allocations — the entire Contains path (XXH3 + derive + dot
 //     product + comparison) runs without touching the heap.
-//   • w=32: 27–37 ns/query. The faster time at n=1K reflects better L1
+//   • w=32: 25–35 ns/query. The faster time at n=1K reflects better L1
 //     cache residency of the small solution array.
-//   • w=64: ~52–54 ns/query. Cost is stable across key counts, indicating
+//   • w=64: ~50–53 ns/query. Cost is stable across key counts, indicating
 //     the solution array fits comfortably in L2 for up to 100K keys.
-//   • w=128: ~80–86 ns/query. ~1.6× the w=64 cost, consistent with
+//   • w=128: ~79–85 ns/query. ~1.6× the w=64 cost, consistent with
 //     iterating ~64 vs ~32 set bits in the coefficient row.
-//   • XXH3 accounts for ~20 ns of the total (compare ContainsHash below).
+//   • XXH3 accounts for ~25 ns of the total (compare ContainsHash below).
 // ---------------------------------------------------------------------------
 
 func BenchmarkContains_TruePositive(b *testing.B) {
@@ -159,16 +159,16 @@ func BenchmarkContains_TruePositive(b *testing.B) {
 // cost should be virtually identical to true positives because the
 // full dot product is always computed before comparison.
 //
-// Reference results (Apple M3 Pro, Go 1.25, n=10000, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, n=10000, -benchtime=10s):
 //
 //   Width   ns/op   B/op   allocs/op
 //   ─────   ─────   ────   ─────────
-//   w=32    36.16   0      0
-//   w=64    54.48   0      0
-//   w=128   85.84   0      0
+//   w=32    30.35   0      0
+//   w=64    47.13   0      0
+//   w=128   79.18   0      0
 //
 // Key observations:
-//   • True-negative cost ≈ true-positive cost (within ~1%) — the full
+//   • True-negative cost ≈ true-positive cost (within ~5%) — the full
 //     GF(2) dot product is always computed before the result comparison.
 //     No early-exit branch exists.
 //   • This means adversarial workloads (all non-member queries) pay
@@ -209,21 +209,21 @@ func BenchmarkContains_TrueNegative(b *testing.B) {
 // This is the pure "filter query" cost, useful for comparing against
 // other filter implementations that separate hashing from querying.
 //
-// Reference results (Apple M3 Pro, Go 1.25, n=10000, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, n=10000, -benchtime=10s):
 //
 //   Width   TP ns/op   TN ns/op   B/op   allocs/op
 //   ─────   ────────   ────────   ────   ─────────
-//   w=32    12.44      12.45      0      0
-//   w=64    26.21      26.21      0      0
-//   w=128   50.50      50.49      0      0
+//   w=32    12.15      12.51      0      0
+//   w=64    25.96      26.25      0      0
+//   w=128   48.99      51.63      0      0
 //
 // Key observations:
-//   • Removes XXH3 (~20 ns) from the measured path, isolating the pure
+//   • Removes XXH3 (~25 ns) from the measured path, isolating the pure
 //     filter query: derive (0.4 ns) + dot product + comparison.
-//   • w=32: ~12.4 ns — ~16 set bits on average, ~0.78 ns per set-bit
+//   • w=32: ~12.2 ns — ~16 set bits on average, ~0.76 ns per set-bit
 //     iteration (TZCNT + XOR + BLSR).
-//   • w=64: ~26.2 ns — ~32 set bits, same ~0.82 ns/bit.
-//   • w=128: ~50.5 ns — ~64 set bits across lo+hi halves, same per-bit
+//   • w=64: ~26.0 ns — ~32 set bits, same ~0.81 ns/bit.
+//   • w=128: ~49.0 ns — ~64 set bits across lo+hi halves, same per-bit
 //     cost. The sequential lo→hi processing adds no measurable overhead.
 //   • TP ≈ TN to within noise — confirms no early-exit optimisation.
 //   • Compare with solver's Query benchmark (37 ns for w=64): the Filter's
@@ -279,28 +279,31 @@ func BenchmarkContainsHash_TrueNegative(b *testing.B) {
 // The dominant cost is banding (O(numKeys) per seed attempt). With a
 // typical overhead ratio (1.05 for w=128), 1–3 seeds suffice.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys      ns/op        B/op        allocs/op
 //   ─────   ──────    ──────────   ─────────   ─────────
-//   w=64    1,000        36,599      54,288    8
-//   w=64    10,000      322,909     532,496    8
-//   w=64    100,000   4,313,420   5,210,256    8
-//   w=128   1,000        55,347      64,144    9
-//   w=128   10,000      462,203     622,608    9
-//   w=128   100,000   5,800,536   6,013,072    9
+//   w=64    1,000       107,618      54,160    8
+//   w=64    10,000      332,135     532,496    8
+//   w=64    100,000   3,820,237   5,226,640    8
+//   w=128   1,000       157,540      60,816    9
+//   w=128   10,000      698,448     622,608    9
+//   w=128   100,000   6,744,833   5,996,688    9
 //
 // Key observations:
-//   • Scales linearly with key count: ~36.6 ns/key (w=64) and ~55.3 ns/key
-//     (w=128) at n=1K; ~43.1 ns/key and ~58.0 ns/key at n=100K.
+//   • w=64/n=1K requires 2 seed attempts (seed 0 fails banding), doubling
+//     its cost to ~107 µs vs ~33 ns/key amortised at larger n.
+//   • Scales linearly with key count at n≥10K: ~33.2 ns/key (w=64) and
+//     ~69.8 ns/key (w=128) at n=10K; ~38.2 ns/key and ~67.4 ns/key at
+//     n=100K.
 //   • Only 8–9 allocations regardless of scale: hasher (1), key hashes (1),
 //     bander arrays (2–3 for coeffLo/coeffHi/result), hashResults (1),
 //     solution struct (1), solution data (1).
 //   • Memory: ~5.2 B/key at 100K (w=64). Dominated by the bander's SoA
 //     arrays (coeffLo + result) and the solution data.
-//   • w=128 is ~1.35× slower than w=64, reflecting the wider coefficient
-//     rows in both banding and back-substitution.
-//   • Construction of a 100K-key filter takes ~4.3 ms (w=64) or ~5.8 ms
+//   • w=128 is ~1.8× slower than w=64 at n=100K, reflecting the wider
+//     coefficient rows in both banding and back-substitution.
+//   • Construction of a 100K-key filter takes ~3.8 ms (w=64) or ~6.7 ms
 //     (w=128) — fast enough for online use cases.
 // ---------------------------------------------------------------------------
 
@@ -342,23 +345,23 @@ func BenchmarkBuildFilter(b *testing.B) {
 // Isolates the Phase 2 + banding + solving cost by removing the XXH3
 // Phase 1 hash from the measured path.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys      ns/op        B/op        allocs/op
 //   ─────   ──────    ──────────   ─────────   ─────────
-//   w=64    1,000        25,384      46,096    7
-//   w=64    10,000      278,965     450,577    7
-//   w=64    100,000   9,931,058   4,407,470    7
-//   w=128   1,000        36,205      55,952    8
-//   w=128   10,000      424,014     540,689    8
-//   w=128   100,000   5,969,315   5,210,265    8
+//   w=64    1,000        47,821      45,968    7
+//   w=64    10,000      289,695     450,577    7
+//   w=64    100,000   3,660,172   4,423,833    7
+//   w=128   1,000       129,142      52,624    8
+//   w=128   10,000      820,365     540,689    8
+//   w=128   100,000  10,842,208   5,193,881    8
 //
 // Key observations:
-//   • Saves ~11 µs at n=1K vs Build (25 vs 37 µs for w=64) by skipping
+//   • Saves ~60 µs at n=1K vs Build (48 vs 108 µs for w=64) by skipping
 //     Phase 1 hashing. The gap narrows at large n where banding dominates.
 //   • One fewer allocation than Build (7 vs 8 for w=64): the key-hash
 //     slice is caller-provided, not internally allocated.
-//   • w=64/n=100K shows ~9.9 ms — higher than Build's 4.3 ms — likely
+//   • w=128/n=100K shows ~10.8 ms — higher than Build's 6.7 ms — likely
 //     due to seed retry variance (more retries in this particular run).
 //     Amortised cost is comparable.
 //   • Memory at 100K: ~4.4 MB (w=64), ~5.2 MB (w=128) — same order as

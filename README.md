@@ -229,9 +229,9 @@ Key → [Hash] → [Bander] → [Solver] → [Filter/Query]
 
 **SoA layout** — Coefficient data is stored in parallel arrays (`coeffLo []uint64`, `coeffHi []uint64`, `result []uint8`) instead of an array of structs. For w≤64, `coeffHi` is `nil` — zero memory, zero operations. This doubles the number of coefficients per cache line compared to AoS layout.
 
-**Width specialisation** — `Add()` dispatches to `addW64()` (pure `uint64`, ~10 ARM64 instructions per elimination step) or `addW128()` (separate lo/hi `uint64` ops). The generic `uint128.rsh()` branch dispatch is avoided entirely.
+**Width specialisation** — `add()` dispatches to `addW64()` (pure `uint64`, ~10 ARM64 instructions per elimination step) or `addW128()` (separate lo/hi `uint64` ops). The generic `uint128.rsh()` branch dispatch is avoided entirely.
 
-**Software-pipelined prefetching** — `AddRange()` touches `coeffLo[nextKey.start]` while processing the current key, pulling the next cache line into L1. This mirrors RocksDB's `BandingAddRange` approach and yields 20–36% throughput improvement at scale.
+**Software-pipelined prefetching** — `addRange()` touches `coeffLo[nextKey.start]` while processing the current key, pulling the next cache line into L1. This mirrors RocksDB's `BandingAddRange` approach and yields 20–36% throughput improvement at scale.
 
 **Dynamic overhead ratio** — The number of slots *m* is computed using RocksDB-style empirical tables where overhead grows logarithmically with *n*. This ensures reliable banding at all scales, unlike a fixed overhead formula that breaks down at large *n*.
 
@@ -266,7 +266,7 @@ Tests cover:
 - **All configurations** — w ∈ {32, 64, 128} × firstCoeffAlwaysOne ∈ {true, false} × r ∈ {1, 4, 7, 8}
 - **Scale** — builds at *n* = 100,000 verified against expected FPR
 - **Edge cases** — empty input, single key, nil/empty filter, rebuild semantics, invalid config panics
-- **Cross-validation** — optimised `Add()` vs reference `slowAdd()`, `AddRange()` vs `Add()`-loop — all verified slot-by-slot
+- **Cross-validation** — optimised `add()` vs reference `slowadd()`, `addRange()` vs `add()`-loop — all verified slot-by-slot
 
 ```bash
 go test -v -count=1 ./...

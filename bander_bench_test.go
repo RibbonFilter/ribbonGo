@@ -8,7 +8,7 @@ import (
 // =============================================================================
 // Benchmarks — banding (Gaussian elimination) hot path
 //
-// The Add() method is the innermost loop of filter construction. For each
+// The add() method is the innermost loop of filter construction. For each
 // key, it performs on-the-fly Gaussian elimination over GF(2): finding the
 // pivot (TrailingZeros), probing the slot, and XOR-reducing on collision.
 //
@@ -16,12 +16,22 @@ import (
 // is strictly the Gaussian elimination logic — no hashing overhead.
 //
 // We benchmark:
-//   1. Add()        — per-key amortised cost of Gaussian elimination.
-//   2. Add() with high load — measures collision chain impact.
+//   1. add()        — per-key amortised cost of Gaussian elimination.
+//   2. add() with high load — measures collision chain impact.
 //
 // Each is measured across ribbon widths (32/64/128), with and without
 // firstCoeffAlwaysOne, to surface any width-dependent or optimisation cost.
 // =============================================================================
+
+// benchKeyHashes generates N deterministic Phase 1 (XXH3) hashes for
+// benchmarking the fused addRange(hashes, hasher) path.
+func benchKeyHashes(h *standardHasher, n int) []uint64 {
+	hashes := make([]uint64, n)
+	for i := range hashes {
+		hashes[i] = h.keyHash([]byte(fmt.Sprintf("bench_bander_key_%d", i)))
+	}
+	return hashes
+}
 
 // benchHashResults generates N pre-computed hashResult values for benchmarking.
 // Uses deterministic keys and seed 0.
@@ -43,16 +53,16 @@ func benchHashResults(w, numStarts uint32, fcao bool, n int) []hashResult {
 // collision chains and measure the common-case single-probe fast path.
 // The bander is reset every cycle to keep conditions consistent.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   fcao     ns/op   allocs/op
 //   ─────   ─────    ─────   ─────────
-//   w=32    true      4.99   0
-//   w=32    false     5.71   0
-//   w=64    true      4.99   0
-//   w=64    false     5.73   0
-//   w=128   true      6.67   0
-//   w=128   false     7.33   0
+//   w=32    true      4.94   0
+//   w=32    false     5.69   0
+//   w=64    true      4.97   0
+//   w=64    false     5.70   0
+//   w=128   true      6.63   0
+//   w=128   false     7.45   0
 //
 // Key observations:
 //   • Zero allocations — all values are stack-local or slice-indexed.
@@ -87,7 +97,7 @@ func BenchmarkAdd(b *testing.B) {
 					if idx == 0 {
 						bd.reset()
 					}
-					sink = bd.Add(hashes[idx])
+					sink = bd.add(hashes[idx])
 				}
 				_ = sink
 			})
@@ -102,12 +112,12 @@ func BenchmarkAdd(b *testing.B) {
 // are more frequent. This benchmarks the worst-case inner loop (multiple
 // XOR iterations per Add call).
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   ns/op   allocs/op
 //   ─────   ─────   ─────────
-//   w=64    12.44   0
-//   w=128   16.39   0
+//   w=64    12.33   0
+//   w=128   16.10   0
 //
 // Key observations:
 //   • ~45% faster than v1 AoS (12.4 vs 22.8 for w=64, 16.4 vs 23.0 for
@@ -141,7 +151,7 @@ func BenchmarkAddHighLoad(b *testing.B) {
 				if idx == 0 {
 					bd.reset()
 				}
-				sink = bd.Add(hashes[idx])
+				sink = bd.add(hashes[idx])
 			}
 			_ = sink
 		})
@@ -155,12 +165,12 @@ func BenchmarkAddHighLoad(b *testing.B) {
 // time and report keys/op throughput. This is the most realistic benchmark
 // as it captures the actual mix of fast-path hits and collision chains.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   ns/op      keys/op   ~keys/sec     allocs/op
 //   ─────   ────────   ───────   ──────────    ─────────
-//   w=64     70,865    10,000    ~141M         0
-//   w=128   111,909    10,000    ~89.4M        0
+//   w=64     71,732    10,000    ~139M         0
+//   w=128   112,371    10,000    ~89.0M        0
 //
 // Key observations:
 //   • ~2× throughput improvement over v1 AoS (141M vs 68.4M keys/sec
@@ -191,7 +201,7 @@ func BenchmarkBandingPassThroughput(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				bd.reset()
 				for _, hr := range hashes {
-					sink = bd.Add(hr)
+					sink = bd.add(hr)
 				}
 			}
 			_ = sink
@@ -213,18 +223,18 @@ func BenchmarkBandingPassThroughput(b *testing.B) {
 //     lives in L2. Prefetching converts random L2 misses into L1 hits,
 //     showing a measurable throughput improvement.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Keys     Width   Method      ns/op        keys/op   ~keys/sec     allocs/op
 //   ──────   ─────   ──────      ──────────   ───────   ──────────    ─────────
-//   10K      w=64    Add-loop       71,574    10,000    ~140M         0
-//   10K      w=64    AddRange       52,725    10,000    ~190M         0
-//   10K      w=128   Add-loop      110,234    10,000    ~90.7M        0
-//   10K      w=128   AddRange       94,640    10,000    ~106M         0
-//   100K     w=64    Add-loop    1,835,023    100,000   ~54.5M        0
-//   100K     w=64    AddRange    1,466,061    100,000   ~68.2M        0
-//   100K     w=128   Add-loop    2,182,444    100,000   ~45.8M        0
-//   100K     w=128   AddRange    1,954,879    100,000   ~51.2M        0
+//   10K      w=64    Add-loop       72,219    10,000    ~138M         0
+//   10K      w=64    AddRange       50,717    10,000    ~197M         0
+//   10K      w=128   Add-loop      113,149    10,000    ~88.4M        0
+//   10K      w=128   AddRange      101,383    10,000    ~98.6M        0
+//   100K     w=64    Add-loop    1,835,070    100,000   ~54.5M        0
+//   100K     w=64    AddRange    1,450,697    100,000   ~68.9M        0
+//   100K     w=128   Add-loop    2,301,301    100,000   ~43.5M        0
+//   100K     w=128   AddRange    1,908,780    100,000   ~52.4M        0
 //
 // Key observations:
 //   • 10K/w=64: AddRange is ~26% faster (52.7 vs 71.6 µs). Even though
@@ -246,7 +256,10 @@ func BenchmarkBandingPassComparison(b *testing.B) {
 			n := numKeys // avoid constant folding with float64(numKeys)
 			numStarts := uint32(float64(n)*1.2) + 1
 			numSlots := numStarts + w - 1
-			hashes := benchHashResults(w, numStarts, true, numKeys)
+			hashResults := benchHashResults(w, numStarts, true, numKeys)
+			h := newStandardHasher(w, numStarts, 7, true)
+			h.setOrdinalSeed(0)
+			keyHashes := benchKeyHashes(h, numKeys)
 
 			b.Run(fmt.Sprintf("keys=%d/w=%d/Add-loop", numKeys, w), func(b *testing.B) {
 				bd := newStandardBander(numSlots, w, true)
@@ -255,8 +268,8 @@ func BenchmarkBandingPassComparison(b *testing.B) {
 				var sink bool
 				for i := 0; i < b.N; i++ {
 					bd.reset()
-					for _, hr := range hashes {
-						sink = bd.Add(hr)
+					for _, hr := range hashResults {
+						sink = bd.add(hr)
 					}
 				}
 				_ = sink
@@ -270,7 +283,7 @@ func BenchmarkBandingPassComparison(b *testing.B) {
 				var sink bool
 				for i := 0; i < b.N; i++ {
 					bd.reset()
-					sink = bd.AddRange(hashes)
+					sink = bd.addRange(keyHashes, h)
 				}
 				_ = sink
 				b.ReportMetric(float64(numKeys), "keys/op")
@@ -286,13 +299,13 @@ func BenchmarkBandingPassComparison(b *testing.B) {
 // This is called once per seed retry, so it should be fast relative to
 // the full banding pass.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Slots      ns/op     allocs/op
 //   ──────     ───────   ─────────
-//   1,000      162       0
-//   10,000     1,514     0
-//   100,000    15,353    0
+//   1,000      154       0
+//   10,000     1,458     0
+//   100,000    15,024    0
 //
 // Key observations:
 //   • Scales linearly with slot count — clear() compiles to memset.

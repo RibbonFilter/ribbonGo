@@ -69,7 +69,7 @@ type bander interface {
 	// on previously inserted equations — either redundant (c=0, r=0) or
 	// contradictory (c=0, r≠0). In both failure cases, the entire banding
 	// attempt must be restarted with a new seed.
-	Add(hr hashResult) bool
+	add(hr hashResult) bool
 
 	// AddRange inserts a batch of key equations, using software pipelining
 	// to prefetch the next key's start slot while processing the current
@@ -78,10 +78,10 @@ type bander interface {
 	//
 	// For large filters (coefficient array exceeds L1 cache), this hides
 	// L2/L3 memory latency and significantly improves throughput over
-	// calling Add() in a loop.
+	// calling add() in a loop.
 	//
 	// [RocksDB: BandingAddRange in ribbon_alg.h]
-	AddRange(hrs []hashResult) bool
+	addRange(hashes []uint64, h *standardHasher) bool
 
 	// reset clears all slots to their zero state, preparing the bander for
 	// a retry with a new hash seed. Does not reallocate — reuses the
@@ -134,7 +134,7 @@ type bander interface {
 //
 // Width-specialised Add:
 //
-// The Add() method dispatches to addW64() or addW128() based on whether
+// The add() method dispatches to addW64() or addW128() based on whether
 // coeffHi is nil. This dispatch happens once per call (not per loop
 // iteration). The specialised methods avoid the generic uint128.rsh()
 // method (which has 4 branches for n≥128, n≥64, n=0, else) and instead
@@ -145,7 +145,7 @@ type bander interface {
 //   - numSlots: total columns in the matrix (= numStarts + coeffBits - 1).
 //   - coeffBits: ribbon width w (32, 64, or 128).
 //   - backtrack: mirrors hasher.firstCoeffAlwaysOne(). When true, the
-//     first iteration of Add() skips the TrailingZeros intrinsic because
+//     first iteration of add() skips the TrailingZeros intrinsic because
 //     bit 0 of the original coefficient row is guaranteed to be 1.
 //
 // [RocksDB: StandardBanding in ribbon_impl.h]
@@ -168,7 +168,7 @@ var _ bander = (*standardBander)(nil)
 //     Paper §2: "the matrix has m columns (slots)."
 //   - coeffBits: ribbon width w — must be 32, 64, or 128.
 //   - firstCoeffAlwaysOne: when true, enables the fast-path optimisation
-//     in Add() that skips TrailingZeros on the first iteration.
+//     in add() that skips TrailingZeros on the first iteration.
 //
 // Panics if coeffBits is not 32, 64, or 128.
 func newStandardBander(numSlots, coeffBits uint32, firstCoeffAlwaysOne bool) *standardBander {
@@ -232,7 +232,7 @@ func newStandardBander(numSlots, coeffBits uint32, firstCoeffAlwaysOne bool) *st
 //   - Cache locality: SoA layout maximises coefficients per cache line.
 //
 // [RocksDB: BandingAdd in ribbon_impl.h]
-func (b *standardBander) Add(hr hashResult) bool {
+func (b *standardBander) add(hr hashResult) bool {
 	if b.coeffHi != nil {
 		return b.addW128(hr)
 	}
@@ -447,7 +447,7 @@ func (b *standardBander) addW128(hr hashResult) bool {
 //
 // When the coefficient array exceeds L1 cache (numSlots > ~8K for w≤64,
 // ~4K for w=128), each key's start position maps to a random cache line.
-// Without prefetching, every first probe in Add() is a guaranteed L2 or
+// Without prefetching, every first probe in add() is a guaranteed L2 or
 // L3 miss (~4–40 ns penalty depending on array size).
 //
 // AddRange pipelines memory access: while processing key[i], it issues a
@@ -460,11 +460,11 @@ func (b *standardBander) addW128(hr hashResult) bool {
 // harmless no-op — the data is already cached.
 //
 // [RocksDB: BandingAddRange in ribbon_alg.h, Prefetch in ribbon_impl.h]
-func (b *standardBander) AddRange(hrs []hashResult) bool {
+func (b *standardBander) addRange(hashes []uint64, h *standardHasher) bool {
 	if b.coeffHi != nil {
-		return b.addRangeW128(hrs)
+		return b.addRangeW128(hashes, h)
 	}
-	return b.addRangeW64(hrs)
+	return b.addRangeW64(hashes, h)
 }
 
 // addRangeW64 is the batched, prefetching variant of addW64 for w≤64.
@@ -482,29 +482,30 @@ func (b *standardBander) AddRange(hrs []hashResult) bool {
 // hiding memory latency.
 //
 // [RocksDB: BandingAddRange in ribbon_alg.h]
-func (b *standardBander) addRangeW64(hrs []hashResult) bool {
+func (b *standardBander) addRangeW64(hashes []uint64, h *standardHasher) bool {
 	coeffs := b.coeffLo
 	results := b.result
-	n := len(hrs)
+	n := len(hashes)
 	if n == 0 {
 		return true
 	}
 
 	// Prefetch first key's start slot into L1 cache.
-	_ = coeffs[hrs[0].start]
+	nextHr := h.derive(hashes[0])
 
 	for idx := 0; idx < n; idx++ {
 		// Software-pipelined prefetch: load next key's start slot into
 		// cache while processing the current key. The ~5–7 ns of
 		// elimination work on key[idx] gives the memory subsystem time
 		// to fetch the cache line for key[idx+1].
+		currHr := nextHr
 		if idx+1 < n {
-			_ = coeffs[hrs[idx+1].start]
+			nextHr = h.derive(hashes[idx+1])
 		}
 
-		s := hrs[idx].start
-		c := hrs[idx].coeffRow.lo
-		r := hrs[idx].result
+		s := currHr.start
+		c := currHr.coeffRow.lo
+		r := currHr.result
 
 		// Fast path: firstCoeffAlwaysOne.
 		if b.backtrack {
@@ -556,30 +557,32 @@ func (b *standardBander) addRangeW64(hrs []hashResult) bool {
 // requires reading both arrays during elimination.
 //
 // [RocksDB: BandingAddRange in ribbon_alg.h]
-func (b *standardBander) addRangeW128(hrs []hashResult) bool {
+func (b *standardBander) addRangeW128(hashes []uint64, h *standardHasher) bool {
 	coeffLo := b.coeffLo
 	coeffHi := b.coeffHi
 	results := b.result
-	n := len(hrs)
+	n := len(hashes)
 	if n == 0 {
 		return true
 	}
 
 	// Prefetch first key's start slot (both lo and hi arrays).
-	_ = coeffLo[hrs[0].start]
-	_ = coeffHi[hrs[0].start]
+	nextHr := h.derive(hashes[0])
+	_ = coeffLo[nextHr.start]
+	_ = coeffHi[nextHr.start]
 
 	for idx := 0; idx < n; idx++ {
+		currHr := nextHr
 		if idx+1 < n {
-			nextStart := hrs[idx+1].start
-			_ = coeffLo[nextStart]
-			_ = coeffHi[nextStart]
+			nextHr = h.derive(hashes[idx+1])
+			_ = coeffLo[nextHr.start]
+			_ = coeffHi[nextHr.start]
 		}
 
-		s := hrs[idx].start
-		cLo := hrs[idx].coeffRow.lo
-		cHi := hrs[idx].coeffRow.hi
-		r := hrs[idx].result
+		s := currHr.start
+		cLo := currHr.coeffRow.lo
+		cHi := currHr.coeffRow.hi
+		r := currHr.result
 
 		// Fast path: firstCoeffAlwaysOne.
 		if b.backtrack {
@@ -658,7 +661,7 @@ func (b *standardBander) addRangeW128(hrs []hashResult) bool {
 //   - Documentation of the canonical algorithm before optimisation.
 //
 // The output must be identical to Add for all inputs.
-func (b *standardBander) slowAdd(hr hashResult) bool {
+func (b *standardBander) slowadd(hr hashResult) bool {
 	s := hr.start
 	c := hr.coeffRow
 	r := hr.result
@@ -704,9 +707,9 @@ func (b *standardBander) slowAdd(hr hashResult) bool {
 // slowAddRange is the unoptimised reference implementation of AddRange.
 // It simply loops over slowAdd with no prefetching, serving as a
 // correctness oracle for cross-validation tests.
-func (b *standardBander) slowAddRange(hrs []hashResult) bool {
+func (b *standardBander) slowaddRange(hrs []hashResult) bool {
 	for _, hr := range hrs {
-		if !b.slowAdd(hr) {
+		if !b.slowadd(hr) {
 			return false
 		}
 	}

@@ -46,12 +46,7 @@ func benchBuildBander(w uint32, numKeys int) (*standardBander, *standardHasher, 
 		h.setOrdinalSeed(seed)
 		bd := newStandardBander(numSlots, w, true)
 
-		hrs := make([]hashResult, numKeys)
-		for i, kh := range hashes {
-			hrs[i] = h.derive(kh)
-		}
-
-		if bd.AddRange(hrs) {
+		if bd.addRange(hashes, h) {
 			return bd, h, hashes
 		}
 	}
@@ -93,16 +88,16 @@ type benchQueryParam struct {
 // register-to-register. The inner loop accesses the bander's SoA arrays
 // sequentially (backwards), giving excellent cache behaviour.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys      ns/op       B/op      allocs/op
 //   ─────   ──────    ──────────  ────────   ─────────
-//   w=64    1,000      12,451     1,328      2
-//   w=64    10,000    116,133     12,336     2
-//   w=64    100,000 1,160,954    114,736     2
-//   w=128   1,000      15,370     1,456      2
-//   w=128   10,000    137,531     12,336     2
-//   w=128   100,000 1,365,698    114,737     2
+//   w=64    1,000      11,713     1,328      2
+//   w=64    10,000    112,109     12,336     2
+//   w=64    100,000 1,113,176    114,736     2
+//   w=128   1,000      15,638     1,456      2
+//   w=128   10,000    141,636     12,336     2
+//   w=128   100,000 1,401,084    114,737     2
 //
 // Key observations:
 //   • Only 2 allocations regardless of scale — one for the Solution struct,
@@ -146,14 +141,14 @@ func BenchmarkBackSubstitute(b *testing.B) {
 // one shift + AND + POPCNT + XOR + OR sequence. This benchmark quantifies
 // that linear scaling.
 //
-// Reference results (Apple M3 Pro, Go 1.25, w=64, n=10000, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, w=64, n=10000, -benchtime=10s):
 //
 //   r-bits   ns/op       ns/slot    allocs/op
 //   ──────   ──────────  ────────   ─────────
-//   r=1       87,924      7.95      2
-//   r=4       90,244      8.16      2
-//   r=7      117,019     10.58      2
-//   r=8      130,524     11.80      2
+//   r=1       88,173      7.97      2
+//   r=4       90,360      8.17      2
+//   r=7      111,873     10.11      2
+//   r=8      133,571     12.07      2
 //
 // Key observations:
 //   • Cost scales sub-linearly with r: going from r=1 to r=8 is only
@@ -184,11 +179,7 @@ func BenchmarkBackSubstituteByResultBits(b *testing.B) {
 	for seed := uint32(0); seed < 200; seed++ {
 		h.setOrdinalSeed(seed)
 		bd = newStandardBander(numSlots, w, true)
-		hrs := make([]hashResult, numKeys)
-		for i, kh := range hashes {
-			hrs[i] = h.derive(kh)
-		}
-		if bd.AddRange(hrs) {
+		if bd.addRange(hashes, h) {
 			break
 		}
 	}
@@ -219,12 +210,12 @@ func BenchmarkBackSubstituteByResultBits(b *testing.B) {
 // w=64 coefficient row with ~32 set bits, this is ~32 XORs + ~32 TZCNT.
 // For w=128, both lo and hi halves are processed sequentially.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   ns/op   allocs/op
 //   ─────   ─────   ─────────
-//   w=64    37.00   0
-//   w=128   66.84   0
+//   w=64    36.81   0
+//   w=128   66.63   0
 //
 // Key observations:
 //   • Zero allocations — the query is pure register + array indexing work.
@@ -270,12 +261,12 @@ func BenchmarkQuery(b *testing.B) {
 // This represents the end-to-end filter lookup throughput (excluding the
 // hash computation, which is benchmarked separately in hash_bench_test.go).
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   ns/op       keys/op   ~keys/sec    allocs/op
 //   ─────   ──────────  ───────   ──────────   ─────────
-//   w=64    3,255,685   100,000   ~30.7M       0
-//   w=128   6,232,455   100,000   ~16.0M       0
+//   w=64    3,245,397   100,000   ~30.8M       0
+//   w=128   6,230,908   100,000   ~16.1M       0
 //
 // Key observations:
 //   • ~32.6 ns/key for w=64 in batch — slightly faster than the per-call
@@ -319,12 +310,12 @@ func BenchmarkQueryThroughput(b *testing.B) {
 // The derive() cost is excluded (benchmarked in hash_bench_test.go);
 // hashResult values are pre-computed.
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys     ns/op         keys/op   ~keys/sec     allocs/op
 //   ─────   ──────   ──────────    ───────   ──────────    ─────────
-//   w=64    10,000   522,953       10,000    ~19.1M        4
-//   w=128   10,000   893,028       10,000    ~11.2M        5
+//   w=64    10,000   517,620       10,000    ~19.3M        4
+//   w=128   10,000   902,892       10,000    ~11.1M        5
 //
 // Key observations:
 //   • End-to-end cost breakdown for w=64 (523 µs total, 10K keys):
@@ -362,11 +353,7 @@ func BenchmarkFullPipelineThroughput(b *testing.B) {
 			for seed := uint32(0); seed < 200; seed++ {
 				h.setOrdinalSeed(seed)
 				bd := newStandardBander(numSlots, w, true)
-				hrs := make([]hashResult, numKeys)
-				for i, kh := range hashes {
-					hrs[i] = h.derive(kh)
-				}
-				if bd.AddRange(hrs) {
+				if bd.addRange(hashes, h) {
 					workingSeed = seed
 					break
 				}
@@ -374,10 +361,6 @@ func BenchmarkFullPipelineThroughput(b *testing.B) {
 
 			// Pre-compute hashResults for the working seed.
 			h.setOrdinalSeed(workingSeed)
-			hrs := make([]hashResult, numKeys)
-			for i, kh := range hashes {
-				hrs[i] = h.derive(kh)
-			}
 
 			// Pre-compute query parameters.
 			type qp struct {
@@ -399,7 +382,7 @@ func BenchmarkFullPipelineThroughput(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				// Band.
 				bd := newStandardBander(numSlots, w, true)
-				bd.AddRange(hrs)
+				bd.addRange(hashes, h)
 				// Solve.
 				sol := backSubstitute(bd, 7)
 				// Query all keys.
@@ -420,14 +403,14 @@ func BenchmarkFullPipelineThroughput(b *testing.B) {
 // key counts. The solution stores one uint8 per slot plus w padding bytes,
 // so memory = numSlots + w bytes (plus 40 bytes of struct overhead).
 //
-// Reference results (Apple M3 Pro, Go 1.25, -benchtime=2s):
+// Reference results (Apple M3 Pro, Go 1.25.4, -benchtime=10s):
 //
 //   Width   Keys      B/op      B/key   allocs/op
 //   ─────   ──────    ───────   ─────   ─────────
 //   w=64    10,000     12,336   1.113   2
 //   w=64    100,000   114,736   1.101   2
 //   w=128   10,000     12,336   1.125   2
-//   w=128   100,000   114,739   1.103   2
+//   w=128   100,000   114,737   1.103   2
 //
 // Key observations:
 //   • ~1.1 bytes per key — the solution stores one uint8 per slot, and
