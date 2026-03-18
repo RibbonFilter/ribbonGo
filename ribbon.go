@@ -2,8 +2,6 @@ package ribbonGo
 
 import (
 	"errors"
-
-	"github.com/zeebo/xxh3"
 )
 
 // =============================================================================
@@ -201,5 +199,5 @@ func (r *Ribbon) Contains(key string) bool {
 	if r.f == nil {
 		return false
 	}
-	return r.f.containsHash(xxh3.HashString(key))
+	return r.f.contains(key)
 }
