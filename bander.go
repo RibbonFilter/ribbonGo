@@ -154,6 +154,7 @@ type standardBander struct {
 	coeffHi   []uint64 // hi 64 bits (w=128 only); nil for w≤64
 	result    []uint8  // r-bit result per slot; len = numSlots
 	numSlots  uint32   // total columns
+	coeffBits uint32   // ribbon width w (32, 64, or 128)
 	backtrack bool     // firstCoeffAlwaysOne optimisation flag
 }
 
@@ -182,6 +183,7 @@ func newStandardBander(numSlots, coeffBits uint32, firstCoeffAlwaysOne bool) *st
 		coeffLo:   make([]uint64, numSlots),
 		result:    make([]uint8, numSlots),
 		numSlots:  numSlots,
+		coeffBits: coeffBits,
 		backtrack: firstCoeffAlwaysOne,
 	}
 	if coeffBits == 128 {

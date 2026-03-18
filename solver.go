@@ -133,11 +133,7 @@ func backSubstitute(sb *standardBander, resultBits uint) *solution {
 		}
 	}
 
-	// Determine ribbon width from the concrete bander.
-	coeffBits := uint32(64)
-	if sb.coeffHi != nil {
-		coeffBits = 128
-	}
+	coeffBits := sb.coeffBits
 
 	// Allocate one result row per slot, plus w padding slots (zero-valued)
 	// so that query can read w consecutive entries starting at any valid
