@@ -152,16 +152,54 @@ func backSubstitute(sb *standardBander, resultBits uint) *solution {
 	}
 
 	// Dispatch to width-specialised back-substitution.
-	if coeffBits <= 64 {
-		backSubst64(sol, sb, numSlots, resultBits)
-	} else {
+	switch coeffBits {
+	case 32:
+		backSubst32(sol, sb, numSlots, resultBits)
+	case 128:
 		backSubst128(sol, sb, numSlots, resultBits)
+	default: // 64
+		backSubst64(sol, sb, numSlots, resultBits)
 	}
 
 	return sol
 }
 
-// backSubst64 performs back-substitution for ribbon width w ≤ 64.
+// backSubst32 performs back-substitution for ribbon width w = 32.
+//
+// Uses uint32 state registers and accesses the bander's coeff32 array
+// directly, halving register and memory footprint compared to backSubst64.
+func backSubst32(sol *solution, sb *standardBander, numSlots uint32, resultBits uint) {
+	if resultBits > 8 {
+		resultBits = 8
+	}
+
+	data := sol.data[:numSlots]
+	coeffs := sb.coeff32
+	results := sb.result
+
+	var state [8]uint32
+
+	for i := int64(numSlots) - 1; i >= 0; i-- {
+		c := coeffs[i]
+		r := results[i]
+
+		var sr uint8
+
+		for j := uint(0); j < resultBits; j++ {
+			tmp := state[j] << 1
+
+			bit := bits.OnesCount32(tmp&c)&1 ^ int((r>>j)&1)
+			tmp |= uint32(bit)
+
+			state[j] = tmp
+			sr |= uint8(bit) << j
+		}
+
+		data[i] = sr
+	}
+}
+
+// backSubst64 performs back-substitution for ribbon width w = 64.
 //
 // Uses a column-major state buffer (one uint64 per result column) that
 // acts as a shift register of the last w solution bits for each column.

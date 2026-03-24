@@ -115,17 +115,18 @@ type bander interface {
 // with 7 bytes of padding), the bander stores coefficient and result data
 // in parallel flat arrays:
 //
-//	coeffLo []uint64   — lower 64 bits of the coefficient row per slot
+//	coeff32 []uint32   — 32-bit coefficient row per slot (w=32 only; nil for w>32)
+//	coeffLo []uint64   — lower 64 bits of coefficient row per slot (w=64/128; nil for w=32)
 //	coeffHi []uint64   — upper 64 bits (w=128 only; nil for w≤64)
 //	result  []uint8    — r-bit fingerprint per slot
 //
 // This layout provides two critical advantages:
 //
-//  1. For w≤64, coeffHi is nil. The elimination loop operates purely on
-//     uint64 values (coeffLo), avoiding all uint128 construction, shifting,
-//     and comparison overhead. Each slot's coefficient is a single 8-byte
-//     word instead of a 16-byte struct, doubling the number of coefficients
-//     per cache line (8 vs ~2.67 with AoS).
+//  1. For w=32, coeff32 stores each coefficient as a uint32 (4 bytes),
+//     fitting 16 coefficients per cache line. The elimination loop uses
+//     uint32 operations (TrailingZeros32, uint32 XOR/shift).
+//     For w=64, coeffLo stores each coefficient as a uint64 (8 bytes),
+//     fitting 8 coefficients per cache line, avoiding uint128 overhead.
 //
 //  2. For w=128, the coeffLo and coeffHi arrays are separate but still
 //     contiguous. The loop accesses both sequentially within the narrow
@@ -134,9 +135,9 @@ type bander interface {
 //
 // Width-specialised Add:
 //
-// The add() method dispatches to addW64() or addW128() based on whether
-// coeffHi is nil. This dispatch happens once per call (not per loop
-// iteration). The specialised methods avoid the generic uint128.rsh()
+// The add() method dispatches to addW32(), addW64(), or addW128() based
+// on the coefficient storage type. This dispatch happens once per call
+// (not per loop iteration). The specialised methods avoid the generic uint128.rsh()
 // method (which has 4 branches for n≥128, n≥64, n=0, else) and instead
 // use direct uint64 shifts and TrailingZeros64 — compiling to a tight
 // TZCNT + LSR + EOR loop with no unnecessary branches.
@@ -150,7 +151,8 @@ type bander interface {
 //
 // [RocksDB: StandardBanding in ribbon_impl.h]
 type standardBander struct {
-	coeffLo   []uint64 // lo 64 bits of coefficient per slot; len = numSlots
+	coeff32   []uint32 // 32-bit coefficient per slot (w=32 only); nil for w>32
+	coeffLo   []uint64 // lo 64 bits of coefficient per slot (w=64/128); nil for w=32
 	coeffHi   []uint64 // hi 64 bits (w=128 only); nil for w≤64
 	result    []uint8  // r-bit result per slot; len = numSlots
 	numSlots  uint32   // total columns
@@ -180,14 +182,19 @@ func newStandardBander(numSlots, coeffBits uint32, firstCoeffAlwaysOne bool) *st
 		panic("ribbon: coeffBits must be 32, 64, or 128")
 	}
 	b := &standardBander{
-		coeffLo:   make([]uint64, numSlots),
 		result:    make([]uint8, numSlots),
 		numSlots:  numSlots,
 		coeffBits: coeffBits,
 		backtrack: firstCoeffAlwaysOne,
 	}
-	if coeffBits == 128 {
+	switch coeffBits {
+	case 32:
+		b.coeff32 = make([]uint32, numSlots)
+	case 128:
+		b.coeffLo = make([]uint64, numSlots)
 		b.coeffHi = make([]uint64, numSlots)
+	default: // 64
+		b.coeffLo = make([]uint64, numSlots)
 	}
 	return b
 }
@@ -235,13 +242,63 @@ func newStandardBander(numSlots, coeffBits uint32, firstCoeffAlwaysOne bool) *st
 //
 // [RocksDB: BandingAdd in ribbon_impl.h]
 func (b *standardBander) add(hr hashResult) bool {
+	if b.coeff32 != nil {
+		return b.addW32(hr)
+	}
 	if b.coeffHi != nil {
 		return b.addW128(hr)
 	}
 	return b.addW64(hr)
 }
 
-// addW64 is the width-specialised Add for w≤64 (w=32 or w=64).
+// addW32 is the width-specialised Add for w=32.
+//
+// Operates on uint32 coefficient values, halving the memory footprint
+// compared to addW64 and fitting 16 coefficients per cache line (vs 8).
+// Uses bits.TrailingZeros32 and uint32 XOR/shift in the inner loop.
+func (b *standardBander) addW32(hr hashResult) bool {
+	s := hr.start
+	c := uint32(hr.coeffRow.lo)
+	r := hr.result
+	coeffs := b.coeff32
+	results := b.result
+
+	if b.backtrack {
+		existing := coeffs[s]
+		if existing == 0 {
+			coeffs[s] = c
+			results[s] = r
+			return true
+		}
+		c ^= existing
+		r ^= results[s]
+		if c == 0 {
+			return false
+		}
+	}
+
+	for {
+		i := uint(bits.TrailingZeros32(c))
+		p := s + uint32(i)
+		c >>= i
+
+		existing := coeffs[p]
+		if existing == 0 {
+			coeffs[p] = c
+			results[p] = r
+			return true
+		}
+
+		c ^= existing
+		r ^= results[p]
+		s = p
+		if c == 0 {
+			return false
+		}
+	}
+}
+
+// addW64 is the width-specialised Add for w=64.
 //
 // Operates purely on uint64 coefficient values — no uint128 construction,
 // no generic rsh() with its 4-branch dispatch, no hi-half operations.
@@ -463,13 +520,85 @@ func (b *standardBander) addW128(hr hashResult) bool {
 //
 // [RocksDB: BandingAddRange in ribbon_alg.h, Prefetch in ribbon_impl.h]
 func (b *standardBander) addRange(hashes []uint64, h *standardHasher) bool {
+	if b.coeff32 != nil {
+		return b.addRangeW32(hashes, h)
+	}
 	if b.coeffHi != nil {
 		return b.addRangeW128(hashes, h)
 	}
 	return b.addRangeW64(hashes, h)
 }
 
-// addRangeW64 is the batched, prefetching variant of addW64 for w≤64.
+// addRangeW32 is the batched, prefetching variant of addW32 for w=32.
+//
+// Uses uint32 coefficient operations and prefetches the next key's
+// start slot into L1 cache via a dummy load.
+func (b *standardBander) addRangeW32(hashes []uint64, h *standardHasher) bool {
+	coeffs := b.coeff32
+	results := b.result
+	n := len(hashes)
+	if n == 0 {
+		return true
+	}
+
+	// Prefetch first key's start slot into L1 cache.
+	nextHr := h.derive(hashes[0])
+	_ = coeffs[nextHr.start]
+
+	for idx := 0; idx < n; idx++ {
+		currHr := nextHr
+		if idx+1 < n {
+			nextHr = h.derive(hashes[idx+1])
+			_ = coeffs[nextHr.start]
+		}
+
+		s := currHr.start
+		c := uint32(currHr.coeffRow.lo)
+		r := currHr.result
+
+		if b.backtrack {
+			existing := coeffs[s]
+			if existing == 0 {
+				coeffs[s] = c
+				results[s] = r
+				continue
+			}
+			c ^= existing
+			r ^= results[s]
+			if c == 0 {
+				return false
+			}
+		}
+
+		success := false
+		for {
+			i := uint(bits.TrailingZeros32(c))
+			p := s + uint32(i)
+			c >>= i
+
+			existing := coeffs[p]
+			if existing == 0 {
+				coeffs[p] = c
+				results[p] = r
+				success = true
+				break
+			}
+
+			c ^= existing
+			r ^= results[p]
+			s = p
+			if c == 0 {
+				break
+			}
+		}
+		if !success {
+			return false
+		}
+	}
+	return true
+}
+
+// addRangeW64 is the batched, prefetching variant of addW64 for w=64.
 //
 // The function processes keys sequentially with a one-ahead prefetch
 // pattern matching RocksDB's BandingAddRange:
@@ -680,15 +809,23 @@ func (b *standardBander) slowadd(hr hashResult) bool {
 		s = p
 
 		// Read slot via SoA arrays.
-		eLo := b.coeffLo[p]
-		eHi := uint64(0)
+		var eLo, eHi uint64
+		if b.coeff32 != nil {
+			eLo = uint64(b.coeff32[p])
+		} else {
+			eLo = b.coeffLo[p]
+		}
 		if b.coeffHi != nil {
 			eHi = b.coeffHi[p]
 		}
 
 		if eLo == 0 && eHi == 0 {
 			// Empty — store.
-			b.coeffLo[p] = c.lo
+			if b.coeff32 != nil {
+				b.coeff32[p] = uint32(c.lo)
+			} else {
+				b.coeffLo[p] = c.lo
+			}
 			if b.coeffHi != nil {
 				b.coeffHi[p] = c.hi
 			}
@@ -728,7 +865,11 @@ func (b *standardBander) slowaddRange(hrs []hashResult) bool {
 // Uses Go's built-in clear() which compiles to an optimised memset,
 // zeroing each array in one pass without per-element branching.
 func (b *standardBander) reset() {
-	clear(b.coeffLo)
+	if b.coeff32 != nil {
+		clear(b.coeff32)
+	} else {
+		clear(b.coeffLo)
+	}
 	if b.coeffHi != nil {
 		clear(b.coeffHi)
 	}
@@ -740,12 +881,17 @@ func (b *standardBander) reset() {
 //
 // Panics if i >= numSlots (programmer error — the caller must respect bounds).
 func (b *standardBander) getSlot(i uint32) bandingSlot {
-	hi := uint64(0)
+	var lo, hi uint64
+	if b.coeff32 != nil {
+		lo = uint64(b.coeff32[i])
+	} else {
+		lo = b.coeffLo[i]
+	}
 	if b.coeffHi != nil {
 		hi = b.coeffHi[i]
 	}
 	return bandingSlot{
-		coeffRow: uint128{hi: hi, lo: b.coeffLo[i]},
+		coeffRow: uint128{hi: hi, lo: lo},
 		result:   b.result[i],
 	}
 }

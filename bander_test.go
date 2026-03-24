@@ -60,8 +60,16 @@ func TestNewStandardBander(t *testing.T) {
 				if bd.getNumSlots() != numSlots {
 					t.Errorf("numSlots = %d, want %d", bd.getNumSlots(), numSlots)
 				}
-				if uint32(len(bd.coeffLo)) != numSlots {
-					t.Errorf("len(coeffLo) = %d, want %d", len(bd.coeffLo), numSlots)
+				// Check that the correct coefficient array was allocated.
+				switch w {
+				case 32:
+					if uint32(len(bd.coeff32)) != numSlots {
+						t.Errorf("len(coeff32) = %d, want %d", len(bd.coeff32), numSlots)
+					}
+				default:
+					if uint32(len(bd.coeffLo)) != numSlots {
+						t.Errorf("len(coeffLo) = %d, want %d", len(bd.coeffLo), numSlots)
+					}
 				}
 
 				// All slots should be empty (zero-valued).
