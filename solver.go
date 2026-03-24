@@ -134,6 +134,12 @@ func backSubstitute(sb *standardBander, resultBits uint) *solution {
 	}
 
 	coeffBits := sb.coeffBits
+	switch coeffBits {
+	case 32, 64, 128:
+		// valid
+	default:
+		panic("ribbon: standardBander.coeffBits must be 32, 64, or 128")
+	}
 
 	// Allocate one result row per slot, plus w padding slots (zero-valued)
 	// so that query can read w consecutive entries starting at any valid
