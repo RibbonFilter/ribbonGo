@@ -319,7 +319,7 @@ func computeNumSlots(numKeys int, coeffBits uint32) uint32 {
 	}
 
 	numToAdd := float64(numKeys)
-	log2NumToAdd := math.Log(numToAdd) * 1.4426950409 // 1/ln(2)
+	log2NumToAdd := math.Log2(numToAdd)
 	approxLog2Slots := uint32(log2NumToAdd + 0.5)
 	if approxLog2Slots > 32 {
 		approxLog2Slots = 32
