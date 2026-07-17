@@ -139,8 +139,8 @@ func buildCore(hashes []uint64, cfg Config) (*filter, error) {
 
 		// Attempt banding: on-the-fly Gaussian elimination over GF(2).
 		if bd.addRange(hashes, h) {
-			// Success! Back-substitute to compute the solution vector S.
-			sol := backSubstitute(bd, cfg.ResultBits)
+			// Success! Back-substitute into the ICML query representation.
+			sol := backSubstituteICML(bd, cfg.CoeffBits, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
 		}
 		// Banding failed (linear dependence). Try next seed.
@@ -357,7 +357,21 @@ func computeNumSlots(numKeys int, coeffBits uint32) uint32 {
 		numSlots = minSlots
 	}
 
+	// ICML invariant (paper §5.2): the Interleaved Column-Major Layout groups
+	// slots into blocks of exactly w rows (numBlocks = numSlots / w), so
+	// numSlots MUST be a multiple of the ribbon width w. Round up. The
+	// minSlots floor (coeffBits*2) is already a multiple of w, so this only
+	// grows numSlots when the interpolated value is not w-aligned.
+	numSlots = roundUpToMultiple(numSlots, coeffBits)
+
 	return numSlots
+}
+
+// roundUpToMultiple rounds n up to the nearest multiple of w (w > 0).
+// Used to enforce the ICML invariant that numSlots is a multiple of the
+// ribbon width w.
+func roundUpToMultiple(n, w uint32) uint32 {
+	return ((n + w - 1) / w) * w
 }
 
 // computeNumStarts derives the number of valid start positions from the
@@ -391,45 +405,43 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 	numStarts := computeNumStarts(numKeys, overheadRatio)
 	numSlots := numStarts + cfg.CoeffBits - 1
 
+	// ICML invariant (paper §5.2): numSlots must be a multiple of the ribbon
+	// width w. Round numSlots up to a multiple of w and recompute numStarts
+	// so the hasher and bander agree with the rounded slot count.
+	numSlots = roundUpToMultiple(numSlots, cfg.CoeffBits)
+	numStarts = numSlots - cfg.CoeffBits + 1
+
 	h := newStandardHasher(cfg.CoeffBits, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	bd := newStandardBander(numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
 
 	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
-		
+
 		bd.reset()
 		if bd.addRange(hashes, h) {
-			sol := backSubstitute(bd, cfg.ResultBits)
+			sol := backSubstituteICML(bd, cfg.CoeffBits, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
 		}
 	}
 	return nil, ErrConstructionFailed
 }
 
-// newFilterFromSolution packages a solution into a filter, padding the
-// data array for bounds-check elimination in the contains hot path.
+// newFilterFromSolution packages an ICML solution into a filter for querying.
 //
-// The solution data from backSubstitute has length numSlots + w (where w
-// is the solver's detected width — which may be 64 for w=32, see note
-// in backSubstitute). We re-allocate with numSlots + 128 bytes of
-// capacity so that contains can use a single `_ = data[127]` BCE proof
-// for all ribbon widths:
-//
-//	For w=32:  max start = numSlots-32,  data[start:] has len ≥ 160  → data[127] ✓
-//	For w=64:  max start = numSlots-64,  data[start:] has len ≥ 192  → data[127] ✓
-//	For w=128: max start = numSlots-128, data[start:] has len ≥ 256  → data[127] ✓
-//
-// The extra padding bytes are always zero, matching the semantics of
-// empty (unoccupied) solution slots.
-func newFilterFromSolution(sol *solution, h *standardHasher, seed uint32, numSlots uint32) *filter {
-	paddedLen := int(numSlots) + 128
-	data := make([]uint8, paddedLen)
-	copy(data, sol.data)
-
+// The icmlSolution already carries the width-specific physical store sized for
+// numBlocks data blocks plus one trailing zero block (see newICMLSolution). The
+// trailing zero block lets containsHash read word(blockIdx+1, j) at any valid
+// start without a boundary branch while a single width-specific BCE proof keeps
+// the per-column reads bounds-check-free. We copy the backing slice(s), enc,
+// and numBlocks straight across.
+func newFilterFromSolution(sol *icmlSolution, h *standardHasher, seed uint32, numSlots uint32) *filter {
 	return &filter{
-		data:     data,
-		hasher:   *h, // copy by value for cache locality
-		seed:     seed,
-		numSlots: numSlots,
+		data64:    sol.data64,
+		data32:    sol.data32,
+		numBlocks: sol.numBlocks,
+		enc:       sol.enc,
+		hasher:    *h, // copy by value for cache locality
+		seed:      seed,
+		numSlots:  numSlots,
 	}
 }

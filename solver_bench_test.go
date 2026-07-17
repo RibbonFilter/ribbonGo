@@ -448,3 +448,83 @@ func BenchmarkSolutionMemory(b *testing.B) {
 		}
 	}
 }
+
+// =============================================================================
+// ICML benchmarks (Task 4)
+// =============================================================================
+
+// benchBuildICMLQuery builds an ICML solution + a w=32-safe row-major oracle
+// solution and pre-computed (start, coeffRow) params for both member and
+// non-member probes. Used to compare icmlQuery vs slowRowMajorQuery.
+func benchBuildICMLQuery(w uint32, numKeys int) (*icmlSolution, *solution, []benchQueryParam, []benchQueryParam) {
+	numStarts := uint32(float64(numKeys) * 1.2)
+	numSlots := numStarts + w - 1
+	numSlots = roundUpToMultiple(numSlots, w)
+	numStarts = numSlots - w + 1
+	h := newStandardHasher(w, numStarts, 7, true)
+
+	hashes := make([]uint64, numKeys)
+	for i := 0; i < numKeys; i++ {
+		hashes[i] = h.keyHash([]byte(fmt.Sprintf("icml_bench_key_%d", i)))
+	}
+	var bd *standardBander
+	for seed := uint32(0); seed < 200; seed++ {
+		h.setOrdinalSeed(seed)
+		bd = newStandardBander(numSlots, w, true)
+		if bd.addRange(hashes, h) {
+			break
+		}
+		bd = nil
+	}
+	if bd == nil {
+		panic("benchBuildICMLQuery: banding failed")
+	}
+	icml := backSubstituteICML(bd, w, 7)
+	rowMajor := backSubstitute(bd, 7)
+
+	mkParams := func(prefix string, n int) []benchQueryParam {
+		p := make([]benchQueryParam, n)
+		for i := 0; i < n; i++ {
+			rh := h.rehash(h.keyHash([]byte(fmt.Sprintf("%s_%d", prefix, i))))
+			p[i] = benchQueryParam{start: h.getStart(rh), coeffRow: h.getCoeffRow(rh)}
+		}
+		return p
+	}
+	pos := mkParams("icml_bench_key", numKeys)
+	neg := mkParams("icml_bench_nonmember", numKeys)
+	return icml, rowMajor, pos, neg
+}
+
+// BenchmarkICMLvsRowMajor_Query compares the full ICML query (icmlQuery)
+// against the w=32-safe row-major oracle (slowRowMajorQuery) at w∈{32,64,128},
+// positive + negative. Both should report 0 allocs/op.
+func BenchmarkICMLvsRowMajor_Query(b *testing.B) {
+	const numKeys = 10000
+	for _, w := range []uint32{32, 64, 128} {
+		icml, rowMajor, pos, neg := benchBuildICMLQuery(w, numKeys)
+		for _, probe := range []struct {
+			name   string
+			params []benchQueryParam
+		}{{"positive", pos}, {"negative", neg}} {
+			p := probe.params
+			b.Run(fmt.Sprintf("ICML/w=%d/%s", w, probe.name), func(b *testing.B) {
+				b.ReportAllocs()
+				var sink uint8
+				for i := 0; i < b.N; i++ {
+					q := p[i%numKeys]
+					sink = icml.icmlQuery(q.start, q.coeffRow)
+				}
+				_ = sink
+			})
+			b.Run(fmt.Sprintf("RowMajor/w=%d/%s", w, probe.name), func(b *testing.B) {
+				b.ReportAllocs()
+				var sink uint8
+				for i := 0; i < b.N; i++ {
+					q := p[i%numKeys]
+					sink = slowRowMajorQuery(rowMajor, q.start, q.coeffRow, w)
+				}
+				_ = sink
+			})
+		}
+	}
+}

@@ -2,8 +2,6 @@ package ribbonGo
 
 import (
 	"errors"
-
-	"github.com/zeebo/xxh3"
 )
 
 // =============================================================================
@@ -53,8 +51,11 @@ type Config struct {
 	//   r=8:  FPR ≈ 0.39%
 	//   r=10: FPR ≈ 0.098%
 	//
-	// Must be in [1, 8]. Limited to 8 because the solution stores one
-	// uint8 per slot (the paper calls these "result rows").
+	// Must be in [1, 8]. Limited to 8 because each key's fingerprint is a
+	// uint8 (the paper calls these "result rows"). The solution itself is
+	// NOT stored one uint8 per slot: it uses the Interleaved Column-Major
+	// Layout (paper §5.2), which packs the r result-bit columns of each
+	// w-row block into r w-bit words (see filter and icmlSolution).
 	ResultBits uint
 
 	// FirstCoeffAlwaysOne controls whether bit 0 of every coefficient row
@@ -196,10 +197,10 @@ func (r *Ribbon) Build(keys []string) error {
 // Returns false if Build has not been called yet.
 //
 // This is the hot path of the library — zero allocations, branchless
-// coefficient derivation, and skip-zero dot product iteration.
+// coefficient derivation, and a short-circuiting per-column ICML query.
 func (r *Ribbon) Contains(key string) bool {
 	if r.f == nil {
 		return false
 	}
-	return r.f.containsHash(xxh3.HashString(key))
+	return r.f.contains(key)
 }

@@ -119,11 +119,22 @@ func paperSizes(b *testing.B) []int {
 // Reports:
 //   ns/op       — total time to build a filter from n keys
 //   ns/key      — amortized per-key construction cost
-//   bits/key    — actual storage per key (simple format: 8 × numSlots / n)
+//   bits/key    — actual ICML storage per key: physical solution words × width / n
+//                 (w=64/128: len(data64)×64; w=32: len(data32)×32)
 //   overhead%   — slot overhead: (numSlots/n − 1) × 100
 //   B/op        — total bytes allocated per build
 //   allocs/op   — total heap allocations per build
 // =============================================================================
+
+// icmlStorageBits returns the actual physical storage of a filter's ICML
+// solution, in bits. w=32 uses the unpacked []uint32 store; w∈{64,128} use
+// []uint64.
+func icmlStorageBits(f *filter) float64 {
+	if f.enc == encW32 {
+		return float64(len(f.data32)) * 32
+	}
+	return float64(len(f.data64)) * 64
+}
 
 func BenchmarkPaper_Build(b *testing.B) {
 	sizes := paperSizes(b)
@@ -154,7 +165,7 @@ func BenchmarkPaper_Build(b *testing.B) {
 				if rb != nil && rb.f != nil {
 					nf := float64(n)
 					numSlots := float64(rb.f.numSlots)
-					bitsPerKey := (numSlots * 8) / nf
+					bitsPerKey := icmlStorageBits(rb.f) / nf
 					overheadPct := ((numSlots / nf) - 1) * 100
 					nsPerKey := float64(b.Elapsed().Nanoseconds()) / (float64(b.N) * nf)
 
@@ -242,13 +253,15 @@ func BenchmarkPaper_Query_Positive(b *testing.B) {
 // Paper §6: "Negative query time" column.
 //
 // Same setup as positive queries, but probes are keys NOT in the build
-// set. The cost should be virtually identical to positive queries
-// because the full GF(2) dot product is always computed before the
-// result comparison — there is no early-exit branch.
+// set. With the ICML layout (paper §5.2) the query decodes result columns
+// one at a time and SHORT-CIRCUITS on the first mismatched column (D3), so
+// negatives are faster than positives: a non-member fails column 0 with
+// probability ~1/2 and returns immediately.
 //
-// Identical true-positive vs true-negative cost confirms there is no
-// timing side-channel: an adversary cannot distinguish member from
-// non-member queries by observing latency.
+// This is a deliberate trade-off (paper §5.2: short-circuiting is used
+// except for a compile-time fixed r ≤ 4, which this library does not do):
+// throughput on non-member-heavy workloads improves, at the cost of a
+// query-latency signal an adversary could observe.
 // =============================================================================
 
 func BenchmarkPaper_Query_Negative(b *testing.B) {
@@ -296,8 +309,9 @@ func BenchmarkPaper_Query_Negative(b *testing.B) {
 // without timing construction, making it fast to run even at n=10^8.
 //
 // Reported metrics:
-//   bits/key         — actual storage: 8 × numSlots / n (our simple format)
-//   packed-bits/key  — theoretical with packed r-bit storage: r × numSlots / n
+//   bits/key         — actual ICML storage: physical solution words × width / n
+//                      (w=64/128: len(data64)×64; w=32: len(data32)×32)
+//   theo-bits/key    — theoretical r-bit-packed lower bound: r × numSlots / n
 //   overhead%        — slot overhead: (numSlots/n − 1) × 100
 //
 // Paper §4 theoretical bits/key (interleaved format):
@@ -337,8 +351,8 @@ func BenchmarkPaper_Space(b *testing.B) {
 				}
 				b.StopTimer()
 
-				b.ReportMetric((numSlots*8)/nf, "bits/key")
-				b.ReportMetric((numSlots*7)/nf, "packed-bits/key")
+				b.ReportMetric(icmlStorageBits(rb.f)/nf, "bits/key")
+				b.ReportMetric((numSlots*7)/nf, "theo-bits/key")
 				b.ReportMetric(((numSlots/nf)-1)*100, "overhead%")
 			})
 		}
