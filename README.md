@@ -156,14 +156,14 @@ Construction throughput and space efficiency at scale.
 
 | *n* | Width | ns/key | bits/key | Overhead |
 |-----|-------|--------|----------|----------|
-| 10⁶ | w=32 | 56.89 | 10.54 | 31.81% |
-| 10⁶ | w=64 | 64.56 | 8.959 | 11.99% |
-| 10⁶ | w=128 | 106.3 | 8.380 | 4.749% |
-| 10⁸ | w=32 | 355.3 | 11.62 | 45.30% |
-| 10⁸ | w=64 | 266.2 | 9.406 | 17.58% |
-| 10⁸ | w=128 | 384.7 | 8.585 | 7.314% |
+| 10⁶ | w=32 | 56.89 | 9.227 | 31.81% |
+| 10⁶ | w=64 | 64.56 | 7.840 | 11.99% |
+| 10⁶ | w=128 | 106.3 | 7.334 | 4.749% |
+| 10⁸ | w=32 | 355.3 | 10.17 | 45.30% |
+| 10⁸ | w=64 | 266.2 | 8.231 | 17.58% |
+| 10⁸ | w=128 | 384.7 | 7.512 | 7.314% |
 
-> At *n* = 10⁶, `w=128` achieves **8.38 bits/key** — only 4.7% above the information-theoretic minimum (7 bits for r=7). At *n* = 10⁸, it remains under 8.6 bits/key with just 7.3% overhead.
+> `bits/key` is the **actual ICML physical storage** (paper §5.2): the *r* result columns packed at *r* bits per slot, i.e. `r × numSlots / n`, not one byte per slot. At *n* = 10⁶, `w=128` achieves **7.33 bits/key** — only 4.7% above the information-theoretic minimum (7 bits for r=7). At *n* = 10⁸, it remains under 7.6 bits/key with just 7.3% overhead.
 
 ### Query Performance
 
@@ -181,18 +181,20 @@ Lookup latency per key (*n* = 10⁶), measured on an **x86 Xeon Platinum** host 
 
 ### Space Efficiency
 
-Bits per key at both scales, with packed (information-theoretic) comparison.
+Actual ICML physical storage (paper §5.2) at both scales. `bits/key` is the *r*
+result columns packed at *r* bits per slot (`r × numSlots / n`); the
+information-theoretic minimum for r=7 is 7 bits/key.
 
-| *n* | Width | bits/key | packed bits/key | Overhead |
-|-----|-------|----------|-----------------|----------|
-| 10⁶ | w=32 | 10.54 | 9.227 | 31.81% |
-| 10⁶ | w=64 | 8.959 | 7.839 | 11.99% |
-| 10⁶ | w=128 | 8.380 | 7.332 | 4.749% |
-| 10⁸ | w=32 | 11.62 | 10.17 | 45.30% |
-| 10⁸ | w=64 | 9.406 | 8.231 | 17.58% |
-| 10⁸ | w=128 | 8.585 | 7.512 | 7.314% |
+| *n* | Width | bits/key | Overhead |
+|-----|-------|----------|----------|
+| 10⁶ | w=32 | 9.227 | 31.81% |
+| 10⁶ | w=64 | 7.840 | 11.99% |
+| 10⁶ | w=128 | 7.334 | 4.749% |
+| 10⁸ | w=32 | 10.17 | 45.30% |
+| 10⁸ | w=64 | 8.231 | 17.58% |
+| 10⁸ | w=128 | 7.512 | 7.314% |
 
-> **w=128** at *n* = 10⁶ uses only **8.38 bits/key** — compare with Bloom filters at **9.6 bits/key** for the same FPR. That's a **12.7% space saving** over Bloom.
+> **w=128** at *n* = 10⁶ uses only **7.33 bits/key** — compare with Bloom filters at **9.6 bits/key** for the same FPR. That's a **23.6% space saving** over Bloom.
 
 ### Run Benchmarks Yourself
 

@@ -362,9 +362,16 @@ func computeNumSlots(numKeys int, coeffBits uint32) uint32 {
 	// numSlots MUST be a multiple of the ribbon width w. Round up. The
 	// minSlots floor (coeffBits*2) is already a multiple of w, so this only
 	// grows numSlots when the interpolated value is not w-aligned.
-	numSlots = ((numSlots + coeffBits - 1) / coeffBits) * coeffBits
+	numSlots = roundUpToMultiple(numSlots, coeffBits)
 
 	return numSlots
+}
+
+// roundUpToMultiple rounds n up to the nearest multiple of w (w > 0).
+// Used to enforce the ICML invariant that numSlots is a multiple of the
+// ribbon width w.
+func roundUpToMultiple(n, w uint32) uint32 {
+	return ((n + w - 1) / w) * w
 }
 
 // computeNumStarts derives the number of valid start positions from the
@@ -401,7 +408,7 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 	// ICML invariant (paper §5.2): numSlots must be a multiple of the ribbon
 	// width w. Round numSlots up to a multiple of w and recompute numStarts
 	// so the hasher and bander agree with the rounded slot count.
-	numSlots = ((numSlots + cfg.CoeffBits - 1) / cfg.CoeffBits) * cfg.CoeffBits
+	numSlots = roundUpToMultiple(numSlots, cfg.CoeffBits)
 	numStarts = numSlots - cfg.CoeffBits + 1
 
 	h := newStandardHasher(cfg.CoeffBits, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
@@ -409,7 +416,7 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 
 	for seed := uint32(0); seed < cfg.MaxSeeds; seed++ {
 		h.setOrdinalSeed(seed)
-		
+
 		bd.reset()
 		if bd.addRange(hashes, h) {
 			sol := backSubstituteICML(bd, cfg.CoeffBits, cfg.ResultBits)

@@ -459,7 +459,7 @@ func BenchmarkSolutionMemory(b *testing.B) {
 func benchBuildICMLQuery(w uint32, numKeys int) (*icmlSolution, *solution, []benchQueryParam, []benchQueryParam) {
 	numStarts := uint32(float64(numKeys) * 1.2)
 	numSlots := numStarts + w - 1
-	numSlots = ((numSlots + w - 1) / w) * w
+	numSlots = roundUpToMultiple(numSlots, w)
 	numStarts = numSlots - w + 1
 	h := newStandardHasher(w, numStarts, 7, true)
 

@@ -40,6 +40,7 @@ import "math/bits"
 //   - w=128: data64, L → (data64[2L+1] : data64[2L]).
 //   - w=32:  data32 (unpacked []uint32), L → data32[L]. Chosen over a
 //     packed two-lanes-per-uint64 encoding by the Task 4 benchmark.
+//
 // Only one backing slice is populated per encoding.
 //
 // The standardHasher is stored by value (not pointer) so that its ~96
@@ -144,14 +145,11 @@ func (f *filter) contains(key string) bool {
 //     columns match. (icmlSolution.icmlQuery is the non-short-circuit
 //     oracle counterpart.)
 //
-// Bounds-check elimination (BCE):
-//
-// A single width-specific `_ = store[maxIdx]` proof at the top guarantees
-// all per-column reads are in-bounds. The two-block read touches at most
-// logical word (blockIdx+2)·r - 1; the trailing zero block ensures this is
-// always allocated, so maxIdx is derived from blockIdx, r, and the
-// width-specific logical→physical mapping — no per-column bounds checks and
-// no branch on blockIdx == numBlocks-1.
+// Bounds-check elimination (BCE): maxL = (blockIdx+2)·r - 1 is the highest
+// logical word the two-block read can touch (the trailing zero block keeps it
+// in bounds). Each width branch hoists a single `_ = data[...]` proof from it
+// (see containsHash64 / containsHash128) so the per-column reads carry no
+// bounds checks and there is no branch on blockIdx == numBlocks-1.
 //
 // Returns false for empty filters (numStarts == 0).
 //
@@ -187,7 +185,8 @@ func (f *filter) containsHash64(hr hashResult, w, blockIdx, offset, r, maxL uint
 	if f.enc == encW32 {
 		data := f.data32
 		_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
-		mask := (uint64(1) << w) - 1 // w == 32 here
+		// This branch is always w == 32, so the mask is a compile-time constant.
+		const mask = uint64(1)<<32 - 1
 		for j := uint32(0); j < r; j++ {
 			lo0 := uint64(data[base0+j])
 			var slice uint64

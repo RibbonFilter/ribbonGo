@@ -513,9 +513,9 @@ func (s *icmlSolution) icmlQuery(start uint32, coeffRow uint128) uint8 {
 // (guaranteed by the builder).
 func backSubstituteICML(sb *standardBander, coeffBits uint32, resultBits uint) *icmlSolution {
 	numSlots := sb.numSlots
-	if resultBits > 8 {
-		resultBits = 8
-	}
+	// No clamp here: newICMLSolution and backSubstICML64/128 clamp resultBits
+	// themselves (the clamp is load-bearing for state[j] BCE), so a duplicate
+	// here would be dead.
 	if numSlots == 0 {
 		return &icmlSolution{
 			numBlocks:  0,
@@ -544,6 +544,8 @@ func backSubstituteICML(sb *standardBander, coeffBits uint32, resultBits uint) *
 // into logical ICML words at every block boundary (i % w == 0) rather than
 // writing a row-major byte per slot.
 func backSubstICML64(sol *icmlSolution, sb *standardBander, numSlots, w uint32, resultBits uint) {
+	// Keep this clamp: it is load-bearing for state[j] BCE (state is [8]uint64,
+	// so the compiler needs to prove j < 8). Do not dedupe against the caller.
 	if resultBits > 8 {
 		resultBits = 8
 	}
@@ -576,6 +578,9 @@ func backSubstICML64(sol *icmlSolution, sb *standardBander, numSlots, w uint32, 
 // backSubstICML128 performs ICML back-substitution for ribbon width w = 128.
 // Mirrors backSubst128 with a per-block flush of the uint128 state registers.
 func backSubstICML128(sol *icmlSolution, sb *standardBander, numSlots uint32, resultBits uint) {
+	// Keep this clamp: it is load-bearing for state[j] BCE (state is
+	// [8]uint128, so the compiler needs to prove j < 8). Do not dedupe against
+	// the caller.
 	if resultBits > 8 {
 		resultBits = 8
 	}

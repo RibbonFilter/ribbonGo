@@ -813,7 +813,7 @@ func buildBandedSystem(t *testing.T, cfg Config, numKeys int, prefix string) (*s
 		numStarts = 1
 	}
 	numSlots := numStarts + w - 1
-	numSlots = ((numSlots + w - 1) / w) * w
+	numSlots = roundUpToMultiple(numSlots, w)
 	numStarts = numSlots - w + 1
 
 	h := newStandardHasher(w, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
@@ -941,27 +941,6 @@ func TestBackSubstICML_SingleSlot(t *testing.T) {
 	}
 }
 
-// newTestICMLSolution builds an icmlSolution with an EXPLICIT encoding so the
-// accessor and slice logic can be tested deterministically per width.
-func newTestICMLSolution(enc icmlEncoding, w, numBlocks uint32, r uint) *icmlSolution {
-	logicalWords := (numBlocks + 1) * uint32(r)
-	sol := &icmlSolution{
-		numBlocks:  numBlocks,
-		coeffBits:  w,
-		resultBits: r,
-		enc:        enc,
-	}
-	switch enc {
-	case encW128:
-		sol.data64 = make([]uint64, 2*logicalWords)
-	case encW32:
-		sol.data32 = make([]uint32, logicalWords)
-	default:
-		sol.data64 = make([]uint64, logicalWords)
-	}
-	return sol
-}
-
 func TestICMLColumnSlice_EdgeCases(t *testing.T) {
 	// Deterministic (not random): construct a known 2-data-block solution with
 	// a single column (r=1), set word(0,0)=A, word(1,0)=B, word(2,0)=0 (the
@@ -985,7 +964,10 @@ func TestICMLColumnSlice_EdgeCases(t *testing.T) {
 			w := tc.w
 			const numBlocks = 2
 			const r = uint(1)
-			sol := newTestICMLSolution(tc.enc, w, numBlocks, r)
+			sol := newICMLSolution(numBlocks, w, r)
+			if sol.enc != tc.enc {
+				t.Fatalf("newICMLSolution(w=%d) enc = %v, want %v", w, sol.enc, tc.enc)
+			}
 
 			// Choose w-bit patterns for A and B (block 0 and block 1, column 0).
 			var aLo, aHi, bLo, bHi uint64
@@ -1068,7 +1050,10 @@ func TestICMLGetSetWord_RoundTrip(t *testing.T) {
 		{"w=128", encW128, 128},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			sol := newTestICMLSolution(tc.enc, tc.w, 4, 3)
+			sol := newICMLSolution(4, tc.w, 3)
+			if sol.enc != tc.enc {
+				t.Fatalf("newICMLSolution(w=%d) enc = %v, want %v", tc.w, sol.enc, tc.enc)
+			}
 			logicalWords := (4 + 1) * uint32(3)
 			// Write distinct patterns to every logical word.
 			for L := uint32(0); L < logicalWords; L++ {
