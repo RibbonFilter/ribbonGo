@@ -774,3 +774,334 @@ func TestBackSubstitute_VerifyEquations(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// ICML (Interleaved Column-Major Layout) — Task 2 tests
+// =============================================================================
+
+// allICMLConfigs returns the full ICML correctness matrix: w∈{32,64,128} ×
+// firstCoeffAlwaysOne∈{true,false} × r∈{1,4,7,8}. Every ICML correctness/oracle
+// test iterates this (unlike allConfigs, which fixes r=7).
+func allICMLConfigs() []Config {
+	var cfgs []Config
+	for _, w := range []uint32{32, 64, 128} {
+		for _, fcao := range []bool{true, false} {
+			for _, r := range []uint{1, 4, 7, 8} {
+				cfgs = append(cfgs, Config{
+					CoeffBits:           w,
+					ResultBits:          r,
+					FirstCoeffAlwaysOne: fcao,
+				})
+			}
+		}
+	}
+	return cfgs
+}
+
+func icmlConfigName(cfg Config) string {
+	return fmt.Sprintf("w=%d/fcao=%v/r=%d", cfg.CoeffBits, cfg.FirstCoeffAlwaysOne, cfg.ResultBits)
+}
+
+// buildBandedSystem builds a solved banded system for the given config by
+// finding a seed that bands numKeys keys, rounding numSlots up to a multiple
+// of w. Returns the bander, hasher, numSlots and numStarts.
+func buildBandedSystem(t *testing.T, cfg Config, numKeys int, prefix string) (*standardBander, *standardHasher, uint32, uint32) {
+	t.Helper()
+	w := cfg.CoeffBits
+	numStarts := uint32(float64(numKeys) * 1.4)
+	if numStarts < 1 {
+		numStarts = 1
+	}
+	numSlots := numStarts + w - 1
+	numSlots = ((numSlots + w - 1) / w) * w
+	numStarts = numSlots - w + 1
+
+	h := newStandardHasher(w, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
+	var bd *standardBander
+	for seed := uint32(0); seed < 200; seed++ {
+		h.setOrdinalSeed(seed)
+		bd = newStandardBander(numSlots, w, cfg.FirstCoeffAlwaysOne)
+		ok := true
+		for i := 0; i < numKeys; i++ {
+			kh := h.keyHash([]byte(fmt.Sprintf("%s_%d", prefix, i)))
+			if !bd.add(h.derive(kh)) {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return bd, h, numSlots, numStarts
+		}
+	}
+	t.Fatalf("could not band system for %s", icmlConfigName(cfg))
+	return nil, nil, 0, 0
+}
+
+func TestBackSubstICML_MatchesRowMajor(t *testing.T) {
+	for _, cfg := range allICMLConfigs() {
+		t.Run(icmlConfigName(cfg), func(t *testing.T) {
+			w := cfg.CoeffBits
+			bd, _, numSlots, _ := buildBandedSystem(t, cfg, 300, "icml_bs")
+
+			rowMajor := backSubstitute(bd, cfg.ResultBits)
+			icml := backSubstituteICML(bd, w, cfg.ResultBits)
+
+			if icml.numBlocks != numSlots/w {
+				t.Fatalf("numBlocks=%d, want %d", icml.numBlocks, numSlots/w)
+			}
+
+			r := uint32(cfg.ResultBits)
+			// Slot-by-slot: decode every bit from ICML and compare to row-major.
+			for i := uint32(0); i < numSlots; i++ {
+				b := i / w
+				off := i % w
+				rm := rowMajor.load(i)
+				for j := uint32(0); j < r; j++ {
+					lo, hi := icml.icmlGetWord(b*r + j)
+					var got uint64
+					if off < 64 {
+						got = (lo >> off) & 1
+					} else {
+						got = (hi >> (off - 64)) & 1
+					}
+					want := uint64(rm>>j) & 1
+					if got != want {
+						t.Fatalf("slot %d col %d: ICML bit=%d, row-major bit=%d",
+							i, j, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestICMLQuery_VerifyEquations(t *testing.T) {
+	for _, cfg := range allICMLConfigs() {
+		t.Run(icmlConfigName(cfg), func(t *testing.T) {
+			w := cfg.CoeffBits
+			bd, _, numSlots, _ := buildBandedSystem(t, cfg, 300, "icml_eq")
+			icml := backSubstituteICML(bd, w, cfg.ResultBits)
+
+			// Also cross-check against the w=32-safe row-major oracle.
+			rowMajor := backSubstitute(bd, cfg.ResultBits)
+
+			for i := uint32(0); i < numSlots; i++ {
+				slot := bd.getSlot(i)
+				if slot.coeffRow.isZero() {
+					continue
+				}
+				got := icml.icmlQuery(i, slot.coeffRow)
+				if got != slot.result {
+					t.Fatalf("icmlQuery(slot %d)=%d, want result=%d", i, got, slot.result)
+				}
+				oracle := slowRowMajorQuery(rowMajor, i, slot.coeffRow, w)
+				if oracle != slot.result {
+					t.Fatalf("slowRowMajorQuery(slot %d)=%d, want result=%d", i, oracle, slot.result)
+				}
+			}
+		})
+	}
+}
+
+func TestBackSubstICML_ZeroSlots(t *testing.T) {
+	for _, w := range []uint32{32, 64, 128} {
+		t.Run(fmt.Sprintf("w=%d", w), func(t *testing.T) {
+			bd := newStandardBander(0, w, true)
+			sol := backSubstituteICML(bd, w, 7)
+			if sol.numBlocks != 0 {
+				t.Errorf("numBlocks=%d, want 0", sol.numBlocks)
+			}
+		})
+	}
+}
+
+func TestBackSubstICML_SingleSlot(t *testing.T) {
+	// One occupied slot at index 0: 1·S[0]=1 → S[0]=1, all else 0.
+	for _, w := range []uint32{32, 64, 128} {
+		t.Run(fmt.Sprintf("w=%d", w), func(t *testing.T) {
+			numSlots := w * 2
+			slots := make([]bandingSlot, numSlots)
+			slots[0] = bandingSlot{coeffRow: uint128{lo: 1}, result: 1}
+			bd := makeBanderFromSlots(numSlots, w, slots)
+			sol := backSubstituteICML(bd, w, 1)
+
+			// word(0,0) bit 0 == 1, everything else 0.
+			lo, _ := sol.icmlGetWord(0)
+			if lo&1 != 1 {
+				t.Errorf("S[0] bit = %d, want 1", lo&1)
+			}
+			if lo&^uint64(1) != 0 {
+				t.Errorf("word(0,0) high bits set: %#x", lo)
+			}
+			lo1, hi1 := sol.icmlGetWord(uint32(1))
+			if lo1 != 0 || hi1 != 0 {
+				t.Errorf("word(1,0) not zero: lo=%#x hi=%#x", lo1, hi1)
+			}
+		})
+	}
+}
+
+// newTestICMLSolution builds an icmlSolution with an EXPLICIT encoding (so both
+// w=32 encodings can be tested deterministically regardless of the global
+// icmlW32Encoding default).
+func newTestICMLSolution(enc icmlEncoding, w, numBlocks uint32, r uint) *icmlSolution {
+	logicalWords := (numBlocks + 1) * uint32(r)
+	sol := &icmlSolution{
+		numBlocks:  numBlocks,
+		coeffBits:  w,
+		resultBits: r,
+		enc:        enc,
+	}
+	switch enc {
+	case encW128:
+		sol.data64 = make([]uint64, 2*logicalWords)
+	case encW32Packed:
+		sol.data64 = make([]uint64, (logicalWords+1)/2)
+	case encW32Unpacked:
+		sol.data32 = make([]uint32, logicalWords)
+	default:
+		sol.data64 = make([]uint64, logicalWords)
+	}
+	return sol
+}
+
+func TestICMLColumnSlice_EdgeCases(t *testing.T) {
+	// Deterministic (not random): construct a known 2-data-block solution with
+	// a single column (r=1), set word(0,0)=A, word(1,0)=B, word(2,0)=0 (the
+	// trailing zero block), and assert icmlColumnSlice combines them correctly
+	// at offset 0 (block boundary), offset 1, offset w-1 (crossing into the
+	// next block), the last valid start, and a read touching the trailing zero
+	// block — for w=32 (packed AND unpacked), w=64, w=128.
+	type wcase struct {
+		name string
+		enc  icmlEncoding
+		w    uint32
+	}
+	cases := []wcase{
+		{"w=32/packed", encW32Packed, 32},
+		{"w=32/unpacked", encW32Unpacked, 32},
+		{"w=64", encW64, 64},
+		{"w=128", encW128, 128},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w := tc.w
+			const numBlocks = 2
+			const r = uint(1)
+			sol := newTestICMLSolution(tc.enc, w, numBlocks, r)
+
+			// Choose w-bit patterns for A and B (block 0 and block 1, column 0).
+			var aLo, aHi, bLo, bHi uint64
+			switch w {
+			case 32:
+				aLo = 0xA5A5A5A5
+				bLo = 0x3C3C3C3C
+			case 64:
+				aLo = 0xA5A5A5A5F0F0F0F0
+				bLo = 0x123456789ABCDEF0
+			case 128:
+				aLo = 0xA5A5A5A5F0F0F0F0
+				aHi = 0x0F0F0F0F5A5A5A5A
+				bLo = 0x123456789ABCDEF0
+				bHi = 0x0FEDCBA987654321
+			}
+			sol.icmlSetWord(0, aLo, aHi) // word(0,0)
+			sol.icmlSetWord(1, bLo, bHi) // word(1,0)
+			// word(2,0) left zero (trailing block).
+
+			// Reference: the logical 2w-bit sequence is [A (rows 0..w-1)] then
+			// [B (rows w..2w-1)] then [0 (rows 2w..3w-1)]. icmlColumnSlice(start)
+			// returns the w-bit window rows [start, start+w).
+			wantSlice := func(start uint32) (uint64, uint64) {
+				// Build a 384-bit logical bit array conceptually; extract via
+				// per-bit reads to avoid width juggling.
+				bitAt := func(pos uint32) uint64 {
+					// pos in [0, 3w).
+					blk := pos / w
+					off := pos % w
+					var lo, hi uint64
+					switch blk {
+					case 0:
+						lo, hi = aLo, aHi
+					case 1:
+						lo, hi = bLo, bHi
+					default:
+						return 0
+					}
+					if off < 64 {
+						return (lo >> off) & 1
+					}
+					return (hi >> (off - 64)) & 1
+				}
+				var lo, hi uint64
+				for k := uint32(0); k < w; k++ {
+					b := bitAt(start + k)
+					if k < 64 {
+						lo |= b << k
+					} else {
+						hi |= b << (k - 64)
+					}
+				}
+				return lo, hi
+			}
+
+			starts := []uint32{0, 1, w - 1, w /* last valid start, offset 0 */, w + 1 /* touches trailing zero */}
+			for _, start := range starts {
+				gotLo, gotHi := sol.icmlColumnSlice(start, 0)
+				wLo, wHi := wantSlice(start)
+				if gotLo != wLo || gotHi != wHi {
+					t.Errorf("start=%d: got (%#x,%#x), want (%#x,%#x)",
+						start, gotHi, gotLo, wHi, wLo)
+				}
+			}
+		})
+	}
+}
+
+func TestICMLGetSetWord_RoundTrip(t *testing.T) {
+	// Verify icmlSetWord/icmlGetWord round-trip and that packed lanes do not
+	// clobber their pair.
+	for _, tc := range []struct {
+		name string
+		enc  icmlEncoding
+		w    uint32
+	}{
+		{"w=32/packed", encW32Packed, 32},
+		{"w=32/unpacked", encW32Unpacked, 32},
+		{"w=64", encW64, 64},
+		{"w=128", encW128, 128},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sol := newTestICMLSolution(tc.enc, tc.w, 4, 3)
+			logicalWords := (4 + 1) * uint32(3)
+			// Write distinct patterns to every logical word.
+			for L := uint32(0); L < logicalWords; L++ {
+				lo := uint64(L)*0x1000001 + 0x9E3779B97F4A7C15
+				var hi uint64
+				if tc.w == 128 {
+					hi = uint64(L)*0xDEADBEEF + 0x123456789
+				}
+				if tc.w == 32 {
+					lo &= 0xffffffff
+				}
+				sol.icmlSetWord(L, lo, hi)
+			}
+			// Read back — every word must match its masked write.
+			for L := uint32(0); L < logicalWords; L++ {
+				lo := uint64(L)*0x1000001 + 0x9E3779B97F4A7C15
+				var hi uint64
+				if tc.w == 128 {
+					hi = uint64(L)*0xDEADBEEF + 0x123456789
+				}
+				if tc.w == 32 {
+					lo &= 0xffffffff
+				}
+				gotLo, gotHi := sol.icmlGetWord(L)
+				if gotLo != lo || gotHi != hi {
+					t.Errorf("L=%d: got (%#x,%#x), want (%#x,%#x)", L, gotHi, gotLo, hi, lo)
+				}
+			}
+		})
+	}
+}
