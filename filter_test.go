@@ -476,9 +476,55 @@ func TestFilter_Accessors(t *testing.T) {
 		t.Errorf("FPRate() = %f, want %f", f.fpRate(), expectedFPR)
 	}
 
-	sol := f.data[:f.numSlots]
-	if uint32(len(sol)) != f.numSlots {
-		t.Errorf("len(SolutionData()) = %d, want %d", len(sol), f.numSlots)
+	// ICML physical store: w=128 uses data64 with 2 uint64 per logical word.
+	numBlocks := f.numSlots / f.hasher.coeffBits
+	if f.numBlocks != numBlocks {
+		t.Errorf("numBlocks = %d, want %d", f.numBlocks, numBlocks)
+	}
+	logicalWords := (numBlocks + 1) * uint32(f.hasher.resultBits)
+	wantPhysical := 2 * logicalWords // w=128
+	if uint32(len(f.data64)) != wantPhysical {
+		t.Errorf("len(data64) = %d, want %d (2*(numBlocks+1)*r)", len(f.data64), wantPhysical)
+	}
+}
+
+// TestFilter_ICMLPhysicalLen asserts the ICML logical word count and the
+// width/encoding-specific physical backing length across all widths.
+func TestFilter_ICMLPhysicalLen(t *testing.T) {
+	for _, cfg := range allConfigs() {
+		t.Run(configName(cfg), func(t *testing.T) {
+			keys := generateKeys("icml_physlen", 1000)
+			f, err := buildFilter(keys, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			w := cfg.CoeffBits
+			numBlocks := f.numSlots / w
+			if f.numBlocks != numBlocks {
+				t.Errorf("numBlocks = %d, want %d", f.numBlocks, numBlocks)
+			}
+			logicalWords := (numBlocks + 1) * uint32(cfg.ResultBits)
+
+			switch f.enc {
+			case encW64:
+				if uint32(len(f.data64)) != logicalWords {
+					t.Errorf("w=64: len(data64)=%d, want %d", len(f.data64), logicalWords)
+				}
+			case encW128:
+				if uint32(len(f.data64)) != 2*logicalWords {
+					t.Errorf("w=128: len(data64)=%d, want %d", len(f.data64), 2*logicalWords)
+				}
+			case encW32Packed:
+				want := (logicalWords + 1) / 2
+				if uint32(len(f.data64)) != want {
+					t.Errorf("w=32 packed: len(data64)=%d, want %d", len(f.data64), want)
+				}
+			case encW32Unpacked:
+				if uint32(len(f.data32)) != logicalWords {
+					t.Errorf("w=32 unpacked: len(data32)=%d, want %d", len(f.data32), logicalWords)
+				}
+			}
+		})
 	}
 }
 
@@ -494,8 +540,14 @@ func TestFilter_Accessors_Empty(t *testing.T) {
 	if f.fpRate() != 0.0 {
 		t.Errorf("FPRate() = %f, want 0.0", f.fpRate())
 	}
-	if f.data[:f.numSlots] != nil {
-		t.Error("SolutionData() should be nil for empty filter")
+	if f.data64 != nil {
+		t.Error("data64 should be nil for empty filter")
+	}
+	if f.data32 != nil {
+		t.Error("data32 should be nil for empty filter")
+	}
+	if f.numBlocks != 0 {
+		t.Errorf("numBlocks = %d, want 0 for empty filter", f.numBlocks)
 	}
 }
 
@@ -726,6 +778,131 @@ func TestBuild_AllResultBits(t *testing.T) {
 				if !f.contains(key) {
 					t.Fatalf("false negative for key %d with r=%d", i, r)
 				}
+			}
+		})
+	}
+}
+
+// =============================================================================
+// ICML query correctness (Task 3)
+// =============================================================================
+
+// buildICMLFilterAndOracle builds an ICML filter plus a row-major reference
+// solution (via backSubstitute over the same successfully-banded seed) so the
+// ICML query can be cross-validated against the w=32-safe oracle.
+func buildICMLFilterAndOracle(t *testing.T, cfg Config, numKeys int, prefix string) (*filter, *solution) {
+	t.Helper()
+	keys := generateKeys(prefix, numKeys)
+	f, err := buildFilter(keys, cfg)
+	if err != nil {
+		t.Fatalf("buildFilter failed: %v", err)
+	}
+	// Re-band with the winning seed to recover the bander for the oracle.
+	h := newStandardHasher(cfg.CoeffBits, f.hasher.numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
+	h.setOrdinalSeed(f.seed)
+	bd := newStandardBander(f.numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
+	hashes := make([]uint64, numKeys)
+	for i, k := range keys {
+		hashes[i] = h.keyHashString(k)
+	}
+	if !bd.addRange(hashes, h) {
+		t.Fatalf("re-band failed for %s", icmlConfigName(cfg))
+	}
+	oracle := backSubstitute(bd, cfg.ResultBits)
+	return f, oracle
+}
+
+func TestFilter_ICMLMatchesRowMajorOracle(t *testing.T) {
+	for _, cfg := range allICMLConfigs() {
+		t.Run(icmlConfigName(cfg), func(t *testing.T) {
+			const numKeys = 800
+			f, oracle := buildICMLFilterAndOracle(t, cfg, numKeys, "icml_oracle")
+			w := cfg.CoeffBits
+
+			check := func(key string) {
+				h := f.hasher.keyHashString(key)
+				hr := f.hasher.derive(h)
+				want := slowRowMajorQuery(oracle, hr.start, hr.coeffRow, w) == hr.result
+				got := f.containsHash(h)
+				if got != want {
+					t.Fatalf("key %q: containsHash=%v, oracle=%v (start=%d)",
+						key, got, want, hr.start)
+				}
+			}
+
+			for i := 0; i < numKeys; i++ {
+				check(fmt.Sprintf("icml_oracle_%d", i))
+			}
+			for i := 0; i < 5000; i++ {
+				check(fmt.Sprintf("icml_oracle_nonmember_%d", i))
+			}
+		})
+	}
+}
+
+func TestContainsHash_ShortCircuitCorrectness(t *testing.T) {
+	// The short-circuit containsHash must return identical booleans to the
+	// full (non-short-circuit) icmlQuery for positives and negatives (D3).
+	for _, cfg := range allICMLConfigs() {
+		t.Run(icmlConfigName(cfg), func(t *testing.T) {
+			const numKeys = 800
+			keys := generateKeys("icml_sc", numKeys)
+			f, err := buildFilter(keys, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Reconstruct the ICML solution to run the full-query oracle.
+			icml := &icmlSolution{
+				data64:     f.data64,
+				data32:     f.data32,
+				numBlocks:  f.numBlocks,
+				coeffBits:  cfg.CoeffBits,
+				resultBits: f.hasher.resultBits,
+				enc:        f.enc,
+			}
+
+			check := func(key string) {
+				h := f.hasher.keyHashString(key)
+				hr := f.hasher.derive(h)
+				full := icml.icmlQuery(hr.start, hr.coeffRow) == hr.result
+				sc := f.containsHash(h)
+				if full != sc {
+					t.Fatalf("key %q: short-circuit=%v, full=%v", key, sc, full)
+				}
+			}
+			for i := 0; i < numKeys; i++ {
+				check(fmt.Sprintf("icml_sc_%d", i))
+			}
+			for i := 0; i < 5000; i++ {
+				check(fmt.Sprintf("icml_sc_nonmember_%d", i))
+			}
+		})
+	}
+}
+
+func TestContainsHash_ZeroAllocs(t *testing.T) {
+	// Automated zero-alloc gate for the ICML hot path across widths.
+	for _, cfg := range allConfigs() {
+		t.Run(configName(cfg), func(t *testing.T) {
+			const numKeys = 2000
+			keys := generateKeys("icml_alloc", numKeys)
+			f, err := buildFilter(keys, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hashes := make([]uint64, numKeys)
+			for i, k := range keys {
+				hashes[i] = f.hasher.keyHashString(k)
+			}
+			var sink bool
+			i := 0
+			avg := testing.AllocsPerRun(1000, func() {
+				sink = f.containsHash(hashes[i%numKeys])
+				i++
+			})
+			_ = sink
+			if avg != 0 {
+				t.Errorf("containsHash allocs/op = %v, want 0", avg)
 			}
 		})
 	}

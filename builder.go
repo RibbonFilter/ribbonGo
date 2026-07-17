@@ -139,8 +139,8 @@ func buildCore(hashes []uint64, cfg Config) (*filter, error) {
 
 		// Attempt banding: on-the-fly Gaussian elimination over GF(2).
 		if bd.addRange(hashes, h) {
-			// Success! Back-substitute to compute the solution vector S.
-			sol := backSubstitute(bd, cfg.ResultBits)
+			// Success! Back-substitute into the ICML query representation.
+			sol := backSubstituteICML(bd, cfg.CoeffBits, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
 		}
 		// Banding failed (linear dependence). Try next seed.
@@ -412,37 +412,29 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 		
 		bd.reset()
 		if bd.addRange(hashes, h) {
-			sol := backSubstitute(bd, cfg.ResultBits)
+			sol := backSubstituteICML(bd, cfg.CoeffBits, cfg.ResultBits)
 			return newFilterFromSolution(sol, h, seed, numSlots), nil
 		}
 	}
 	return nil, ErrConstructionFailed
 }
 
-// newFilterFromSolution packages a solution into a filter, padding the
-// data array for bounds-check elimination in the contains hot path.
+// newFilterFromSolution packages an ICML solution into a filter for querying.
 //
-// The solution data from backSubstitute has length numSlots + w (where w
-// is the solver's detected width — which may be 64 for w=32, see note
-// in backSubstitute). We re-allocate with numSlots + 128 bytes of
-// capacity so that contains can use a single `_ = data[127]` BCE proof
-// for all ribbon widths:
-//
-//	For w=32:  max start = numSlots-32,  data[start:] has len ≥ 160  → data[127] ✓
-//	For w=64:  max start = numSlots-64,  data[start:] has len ≥ 192  → data[127] ✓
-//	For w=128: max start = numSlots-128, data[start:] has len ≥ 256  → data[127] ✓
-//
-// The extra padding bytes are always zero, matching the semantics of
-// empty (unoccupied) solution slots.
-func newFilterFromSolution(sol *solution, h *standardHasher, seed uint32, numSlots uint32) *filter {
-	paddedLen := int(numSlots) + 128
-	data := make([]uint8, paddedLen)
-	copy(data, sol.data)
-
+// The icmlSolution already carries the width-specific physical store sized for
+// numBlocks data blocks plus one trailing zero block (see newICMLSolution). The
+// trailing zero block lets containsHash read word(blockIdx+1, j) at any valid
+// start without a boundary branch while a single width-specific BCE proof keeps
+// the per-column reads bounds-check-free. We copy the backing slice(s), enc,
+// and numBlocks straight across.
+func newFilterFromSolution(sol *icmlSolution, h *standardHasher, seed uint32, numSlots uint32) *filter {
 	return &filter{
-		data:     data,
-		hasher:   *h, // copy by value for cache locality
-		seed:     seed,
-		numSlots: numSlots,
+		data64:    sol.data64,
+		data32:    sol.data32,
+		numBlocks: sol.numBlocks,
+		enc:       sol.enc,
+		hasher:    *h, // copy by value for cache locality
+		seed:      seed,
+		numSlots:  numSlots,
 	}
 }

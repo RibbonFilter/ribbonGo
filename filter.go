@@ -19,13 +19,27 @@ import "math/bits"
 // the coefficient row against the solution window, and compares the
 // computed result to the expected fingerprint.
 //
-// Memory layout:
+// Memory layout (ICML — Interleaved Column-Major Layout, paper §5.2):
 //
-// The solution vector is stored as one uint8 per slot (row-major), padded
-// to numSlots + 128 bytes. The extra 128 bytes ensure that containsHash
-// can use a single bounds-check elimination proof (`_ = data[127]`) for
-// all ribbon widths (w = 32, 64, 128), avoiding per-iteration bounds
-// checks in the dot-product loop.
+// The solution is stored in RocksDB's InterleavedSolutionStorage format:
+// memory is divided into w-bit logical words, grouped into blocks of r
+// words, where block b is the column-major transpose of solution rows
+// [b·w, b·w + w). A query at start s reads column j from the two logical
+// words that straddle the block boundary at s (block s/w and s/w+1),
+// combines them with a shift by s%w, and takes the GF(2) dot product with
+// the coefficient row.
+//
+// One trailing zero block is allocated beyond the numBlocks data blocks so
+// the query may read word(blockIdx+1, j) unconditionally (no branch on the
+// last block) while remaining in bounds under a single width-specific BCE
+// proof at the top of containsHash. This replaces the old row-major
+// "+128-byte" padding: bounds are proved per width from blockIdx and r.
+//
+// Physical storage is width-specific and selected by enc:
+//   - w=64:  data64, logical word L → data64[L].
+//   - w=128: data64, L → (data64[2L+1] : data64[2L]).
+//   - w=32:  data64 with two 32-bit lanes per uint64 (packed encoding).
+// Only one backing slice is populated per encoding.
 //
 // The standardHasher is stored by value (not pointer) so that its ~96
 // bytes of pre-computed masks sit adjacent to the slice header in memory,
@@ -35,12 +49,26 @@ import "math/bits"
 // containsHash may be called concurrently from multiple goroutines
 // without synchronisation.
 //
-// [RocksDB: InMemSimpleSolution + SimpleFilterQuery in ribbon_impl.h / ribbon_alg.h]
+// [RocksDB: InterleavedSolutionStorage + InterleavedFilterQuery in ribbon_impl.h / ribbon_alg.h]
 type filter struct {
-	// data holds the solution vector: one r-bit result row (uint8) per
-	// slot, padded to numSlots + 128 bytes for bounds-check elimination.
-	// Padding bytes are zero, matching empty (unoccupied) solution slots.
-	data []uint8
+	// data64 holds the ICML solution words (see icmlSolution). It backs the
+	// w=64, w=128, and packed-w=32 encodings; only one backing slice is used
+	// per encoding.
+	data64 []uint64
+
+	// data32 backs the unpacked w=32 encoding only (nil otherwise). Retained
+	// so both w=32 encodings are queryable behind the accessor until Task 4
+	// settles the packing decision.
+	data32 []uint32
+
+	// numBlocks is numSlots / w — the number of ICML data blocks (excluding
+	// the trailing zero block).
+	numBlocks uint32
+
+	// enc selects the physical ICML encoding for this filter's width, copied
+	// from the icmlSolution so the query path maps logical→physical without
+	// re-deriving it from the width.
+	enc icmlEncoding
 
 	// hasher is the concrete standardHasher configured with the successful
 	// seed and all per-width pre-computed masks (coeffLoMask, coeffHiMask,
@@ -95,70 +123,168 @@ func (f *filter) contains(key string) bool {
 	return f.containsHash(h)
 }
 
-// containsHash is the inlined query core. It performs the full Phase 2
-// derive + GF(2) dot product in one tight sequence.
+// containsHash is the inlined ICML query core. It performs the full Phase 2
+// derive + per-column GF(2) dot product with short-circuiting.
 //
-// Algorithm:
+// Algorithm (paper §5.2, InterleavedFilterQuery):
 //
-//  1. derive(h) → (start, coeffRow, expectedResult)
-//     derive() is inlineable (cost 67) and computes:
-//     - rehash: (h ^ rawSeed) * kRehashFactor
-//     - start:  fastRange64(rehashed, numStarts)   [high bits]
-//     - coeff:  multiply → mask/xor/or             [branchless]
-//     - result: multiply → bswap → mask            [byte-swapped]
+//  1. derive(h) → (start, coeffRow, expectedResult).
 //
-//  2. Dot product: iterate over set bits in coeffRow, XOR the
-//     corresponding solution bytes into a running result.
-//     Uses TrailingZeros64 (TZCNT/BSF) + clear-lowest-bit (BLSR)
-//     to visit only the ~w/2 set bits in a random coefficient row.
+//  2. blockIdx = start/w, offset = start%w. Rows [start, start+w) span
+//     ICML block blockIdx (its upper w-offset rows) and block blockIdx+1
+//     (its lower offset rows). For each result column j, read the two
+//     logical words word(blockIdx, j) and word(blockIdx+1, j), combine
+//     them with a shift by offset to reconstruct the w-bit column slice,
+//     then bit_j = parity(slice & coeffRow).
 //
-//  3. Compare: return (computed == expected).
+//  3. Short-circuit (D3): compare bit_j to (expectedResult >> j) & 1 and
+//     return false immediately on the first mismatch. A non-member fails
+//     column 0 with probability 1/2, so negatives return ~2× faster on
+//     average than the full r-column scan. Returns true after all r
+//     columns match. (icmlSolution.icmlQuery is the non-short-circuit
+//     oracle counterpart.)
 //
 // Bounds-check elimination (BCE):
 //
-// A single `_ = data[127]` proof guarantees all per-iteration accesses
-// are in-bounds. The filter's data is padded to numSlots + 128 bytes,
-// and the maximum start is numStarts - 1 = numSlots - w, so
-// data[start:] has length >= w + 128 >= 160 for all w in {32, 64, 128}.
-//
-// The `& 63` masks on TrailingZeros64 results provide a compile-time
-// proof that lo-loop indices are in [0, 63] and hi-loop indices are
-// in [64, 127], both <= 127, eliminating bounds checks entirely.
+// A single width-specific `_ = store[maxIdx]` proof at the top guarantees
+// all per-column reads are in-bounds. The two-block read touches at most
+// logical word (blockIdx+2)·r - 1; the trailing zero block ensures this is
+// always allocated, so maxIdx is derived from blockIdx, r, and the
+// width-specific logical→physical mapping — no per-column bounds checks and
+// no branch on blockIdx == numBlocks-1.
 //
 // Returns false for empty filters (numStarts == 0).
 //
-// [RocksDB: SimpleQueryHelper in ribbon_alg.h]
+// [RocksDB: InterleavedFilterQuery in ribbon_alg.h]
 func (f *filter) containsHash(h uint64) bool {
 	if f.hasher.numStarts == 0 {
 		return false
 	}
 
 	hr := f.hasher.derive(h)
+	w := f.hasher.coeffBits
+	r := uint32(f.hasher.resultBits)
 
-	// Slice the solution window starting at the key's start position.
-	// The BCE proof ensures data[0..127] are all in-bounds.
-	data := f.data[hr.start:]
-	_ = data[127] // BCE proof: all subsequent accesses are within [0, 127].
+	blockIdx := hr.start / w
+	offset := hr.start % w
 
-	// GF(2) dot product: XOR solution bytes at each set coefficient bit.
-	var result uint8
+	// Logical word index of word(blockIdx+1, r-1) — the highest logical word
+	// the two-block read can touch this query.
+	maxL := (blockIdx+2)*r - 1
 
-	// Process the lower 64 bits of the coefficient row (positions 0..63).
-	lo := hr.coeffRow.lo
-	for lo != 0 {
-		result ^= data[bits.TrailingZeros64(lo)&63]
-		lo &= lo - 1 // clear lowest set bit (BLSR)
+	if w == 128 {
+		return f.containsHash128(hr, blockIdx, offset, r, maxL)
 	}
+	return f.containsHash64(hr, w, blockIdx, offset, r, maxL)
+}
 
-	// Process the upper 64 bits (positions 64..127).
-	// For w <= 64, coeffRow.hi is always 0, making this a zero-iteration loop.
-	hi := hr.coeffRow.hi
-	for hi != 0 {
-		result ^= data[64+bits.TrailingZeros64(hi)&63]
-		hi &= hi - 1
+// containsHash64 is the ICML short-circuit query for ribbon width w ≤ 64.
+func (f *filter) containsHash64(hr hashResult, w, blockIdx, offset, r, maxL uint32) bool {
+	c := hr.coeffRow.lo
+	base0 := blockIdx * r
+	base1 := (blockIdx + 1) * r
+
+	switch f.enc {
+	case encW32Unpacked:
+		data := f.data32
+		_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
+		var mask uint64
+		if w < 64 {
+			mask = (uint64(1) << w) - 1
+		} else {
+			mask = ^uint64(0)
+		}
+		for j := uint32(0); j < r; j++ {
+			lo0 := uint64(data[base0+j])
+			var slice uint64
+			if offset == 0 {
+				slice = lo0
+			} else {
+				lo1 := uint64(data[base1+j])
+				slice = ((lo0 >> offset) | (lo1 << (w - offset))) & mask
+			}
+			bit := bits.OnesCount64(slice&c) & 1
+			if bit != int((hr.result>>j)&1) {
+				return false
+			}
+		}
+		return true
+
+	case encW32Packed:
+		data := f.data64
+		_ = data[maxL>>1] // BCE proof: highest physical uint64 index.
+		for j := uint32(0); j < r; j++ {
+			l0 := base0 + j
+			lo0 := (data[l0>>1] >> ((l0 & 1) * 32)) & 0xffffffff
+			var slice uint64
+			if offset == 0 {
+				slice = lo0
+			} else {
+				l1 := base1 + j
+				lo1 := (data[l1>>1] >> ((l1 & 1) * 32)) & 0xffffffff
+				slice = ((lo0 >> offset) | (lo1 << (w - offset))) & ((uint64(1) << w) - 1)
+			}
+			bit := bits.OnesCount64(slice&c) & 1
+			if bit != int((hr.result>>j)&1) {
+				return false
+			}
+		}
+		return true
+
+	default: // encW64
+		data := f.data64
+		_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
+		for j := uint32(0); j < r; j++ {
+			lo0 := data[base0+j]
+			var slice uint64
+			if offset == 0 {
+				slice = lo0
+			} else {
+				lo1 := data[base1+j]
+				slice = (lo0 >> offset) | (lo1 << (w - offset))
+			}
+			bit := bits.OnesCount64(slice&c) & 1
+			if bit != int((hr.result>>j)&1) {
+				return false
+			}
+		}
+		return true
 	}
+}
 
-	return result == hr.result
+// containsHash128 is the ICML short-circuit query for ribbon width w = 128.
+func (f *filter) containsHash128(hr hashResult, blockIdx, offset, r, maxL uint32) bool {
+	data := f.data64
+	_ = data[2*maxL+1] // BCE proof: highest physical (hi) index.
+
+	cLo := hr.coeffRow.lo
+	cHi := hr.coeffRow.hi
+	base0 := blockIdx * r
+	base1 := (blockIdx + 1) * r
+
+	for j := uint32(0); j < r; j++ {
+		l0 := base0 + j
+		lo0 := data[2*l0]
+		hi0 := data[2*l0+1]
+
+		var sLo, sHi uint64
+		if offset == 0 {
+			sLo, sHi = lo0, hi0
+		} else {
+			l1 := base1 + j
+			lo1 := data[2*l1]
+			hi1 := data[2*l1+1]
+			w0 := uint128{hi: hi0, lo: lo0}.rsh(uint(offset))
+			w1 := uint128{hi: hi1, lo: lo1}.lsh(uint(128 - offset))
+			s := w0.or(w1)
+			sLo, sHi = s.lo, s.hi
+		}
+		bit := bits.OnesCount64((sLo&cLo)^(sHi&cHi)) & 1
+		if bit != int((hr.result>>j)&1) {
+			return false
+		}
+	}
+	return true
 }
 
 // =============================================================================
