@@ -38,7 +38,8 @@ import "math/bits"
 // Physical storage is width-specific and selected by enc:
 //   - w=64:  data64, logical word L → data64[L].
 //   - w=128: data64, L → (data64[2L+1] : data64[2L]).
-//   - w=32:  data64 with two 32-bit lanes per uint64 (packed encoding).
+//   - w=32:  data32 (unpacked []uint32), L → data32[L]. Chosen over a
+//     packed two-lanes-per-uint64 encoding by the Task 4 benchmark.
 // Only one backing slice is populated per encoding.
 //
 // The standardHasher is stored by value (not pointer) so that its ~96
@@ -51,14 +52,11 @@ import "math/bits"
 //
 // [RocksDB: InterleavedSolutionStorage + InterleavedFilterQuery in ribbon_impl.h / ribbon_alg.h]
 type filter struct {
-	// data64 holds the ICML solution words (see icmlSolution). It backs the
-	// w=64, w=128, and packed-w=32 encodings; only one backing slice is used
-	// per encoding.
+	// data64 holds the ICML solution words (see icmlSolution) for w∈{64,128};
+	// nil for w=32. Only one backing slice is used per encoding.
 	data64 []uint64
 
-	// data32 backs the unpacked w=32 encoding only (nil otherwise). Retained
-	// so both w=32 encodings are queryable behind the accessor until Task 4
-	// settles the packing decision.
+	// data32 holds the ICML solution words for w=32 (unpacked); nil otherwise.
 	data32 []uint32
 
 	// numBlocks is numSlots / w — the number of ICML data blocks (excluding
@@ -184,16 +182,10 @@ func (f *filter) containsHash64(hr hashResult, w, blockIdx, offset, r, maxL uint
 	base0 := blockIdx * r
 	base1 := (blockIdx + 1) * r
 
-	switch f.enc {
-	case encW32Unpacked:
+	if f.enc == encW32 {
 		data := f.data32
 		_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
-		var mask uint64
-		if w < 64 {
-			mask = (uint64(1) << w) - 1
-		} else {
-			mask = ^uint64(0)
-		}
+		mask := (uint64(1) << w) - 1 // w == 32 here
 		for j := uint32(0); j < r; j++ {
 			lo0 := uint64(data[base0+j])
 			var slice uint64
@@ -209,47 +201,26 @@ func (f *filter) containsHash64(hr hashResult, w, blockIdx, offset, r, maxL uint
 			}
 		}
 		return true
-
-	case encW32Packed:
-		data := f.data64
-		_ = data[maxL>>1] // BCE proof: highest physical uint64 index.
-		for j := uint32(0); j < r; j++ {
-			l0 := base0 + j
-			lo0 := (data[l0>>1] >> ((l0 & 1) * 32)) & 0xffffffff
-			var slice uint64
-			if offset == 0 {
-				slice = lo0
-			} else {
-				l1 := base1 + j
-				lo1 := (data[l1>>1] >> ((l1 & 1) * 32)) & 0xffffffff
-				slice = ((lo0 >> offset) | (lo1 << (w - offset))) & ((uint64(1) << w) - 1)
-			}
-			bit := bits.OnesCount64(slice&c) & 1
-			if bit != int((hr.result>>j)&1) {
-				return false
-			}
-		}
-		return true
-
-	default: // encW64
-		data := f.data64
-		_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
-		for j := uint32(0); j < r; j++ {
-			lo0 := data[base0+j]
-			var slice uint64
-			if offset == 0 {
-				slice = lo0
-			} else {
-				lo1 := data[base1+j]
-				slice = (lo0 >> offset) | (lo1 << (w - offset))
-			}
-			bit := bits.OnesCount64(slice&c) & 1
-			if bit != int((hr.result>>j)&1) {
-				return false
-			}
-		}
-		return true
 	}
+
+	// encW64: logical word L → data64[L]; full 64-bit slices (no masking).
+	data := f.data64
+	_ = data[maxL] // BCE proof: all reads below are in [0, maxL].
+	for j := uint32(0); j < r; j++ {
+		lo0 := data[base0+j]
+		var slice uint64
+		if offset == 0 {
+			slice = lo0
+		} else {
+			lo1 := data[base1+j]
+			slice = (lo0 >> offset) | (lo1 << (w - offset))
+		}
+		bit := bits.OnesCount64(slice&c) & 1
+		if bit != int((hr.result>>j)&1) {
+			return false
+		}
+	}
+	return true
 }
 
 // containsHash128 is the ICML short-circuit query for ribbon width w = 128.

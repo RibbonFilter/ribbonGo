@@ -941,9 +941,8 @@ func TestBackSubstICML_SingleSlot(t *testing.T) {
 	}
 }
 
-// newTestICMLSolution builds an icmlSolution with an EXPLICIT encoding (so both
-// w=32 encodings can be tested deterministically regardless of the global
-// icmlW32Encoding default).
+// newTestICMLSolution builds an icmlSolution with an EXPLICIT encoding so the
+// accessor and slice logic can be tested deterministically per width.
 func newTestICMLSolution(enc icmlEncoding, w, numBlocks uint32, r uint) *icmlSolution {
 	logicalWords := (numBlocks + 1) * uint32(r)
 	sol := &icmlSolution{
@@ -955,9 +954,7 @@ func newTestICMLSolution(enc icmlEncoding, w, numBlocks uint32, r uint) *icmlSol
 	switch enc {
 	case encW128:
 		sol.data64 = make([]uint64, 2*logicalWords)
-	case encW32Packed:
-		sol.data64 = make([]uint64, (logicalWords+1)/2)
-	case encW32Unpacked:
+	case encW32:
 		sol.data32 = make([]uint32, logicalWords)
 	default:
 		sol.data64 = make([]uint64, logicalWords)
@@ -971,15 +968,14 @@ func TestICMLColumnSlice_EdgeCases(t *testing.T) {
 	// trailing zero block), and assert icmlColumnSlice combines them correctly
 	// at offset 0 (block boundary), offset 1, offset w-1 (crossing into the
 	// next block), the last valid start, and a read touching the trailing zero
-	// block — for w=32 (packed AND unpacked), w=64, w=128.
+	// block — for w=32, w=64, w=128.
 	type wcase struct {
 		name string
 		enc  icmlEncoding
 		w    uint32
 	}
 	cases := []wcase{
-		{"w=32/packed", encW32Packed, 32},
-		{"w=32/unpacked", encW32Unpacked, 32},
+		{"w=32", encW32, 32},
 		{"w=64", encW64, 64},
 		{"w=128", encW128, 128},
 	}
@@ -1067,8 +1063,7 @@ func TestICMLGetSetWord_RoundTrip(t *testing.T) {
 		enc  icmlEncoding
 		w    uint32
 	}{
-		{"w=32/packed", encW32Packed, 32},
-		{"w=32/unpacked", encW32Unpacked, 32},
+		{"w=32", encW32, 32},
 		{"w=64", encW64, 64},
 		{"w=128", encW128, 128},
 	} {

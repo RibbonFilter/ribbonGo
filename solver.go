@@ -354,21 +354,19 @@ func (s *solution) query(start uint32, coeffRow uint128) uint8 {
 // flush of state[0..r) into word(i/w, j) whenever i % w == 0.
 
 // icmlEncoding selects the physical storage layout for a given ribbon width.
-// The two w=32 encodings are interchangeable behind the icmlGetWord/icmlSetWord
-// accessor; Task 4 benchmarks both and removes the loser.
+//
+// The w=32 physical encoding was decided empirically in Task 4: an "unpacked"
+// []uint32 store beat a "packed" two-lanes-per-uint64 store on the real
+// containsHash short-circuit path (x86 Xeon: 20.3 vs 30.3 ns positive, 8.8 vs
+// 11.5 ns negative). The packed encoding was removed; encW32 is the surviving
+// unpacked variant.
 type icmlEncoding uint8
 
 const (
-	encW64        icmlEncoding = iota // w=64:  data64[L]
-	encW128                           // w=128: data64[2L], data64[2L+1]
-	encW32Packed                      // w=32:  two 32-bit lanes per uint64
-	encW32Unpacked                    // w=32:  data32[L]
+	encW64  icmlEncoding = iota // w=64:  data64[L]
+	encW128                     // w=128: data64[2L], data64[2L+1]
+	encW32                      // w=32:  data32[L] (unpacked)
 )
-
-// icmlW32Encoding selects the physical encoding used for w=32 ICML solutions.
-// Both packed and unpacked are supported behind the accessor so the w=32
-// packing decision (D2) can be settled empirically in Task 4.
-var icmlW32Encoding = encW32Packed
 
 // icmlEncodingFor maps a ribbon width to its ICML physical encoding.
 func icmlEncodingFor(coeffBits uint32) icmlEncoding {
@@ -376,7 +374,7 @@ func icmlEncodingFor(coeffBits uint32) icmlEncoding {
 	case 128:
 		return encW128
 	case 32:
-		return icmlW32Encoding
+		return encW32
 	default: // 64
 		return encW64
 	}
@@ -384,11 +382,10 @@ func icmlEncodingFor(coeffBits uint32) icmlEncoding {
 
 // icmlSolution holds the ICML (Interleaved Column-Major Layout) solution — the
 // production query representation. Only one backing slice is populated per
-// encoding: data64 for w∈{64,128} and the packed w=32 variant; data32 for the
-// unpacked w=32 variant.
+// encoding: data64 for w∈{64,128}; data32 for w=32.
 type icmlSolution struct {
-	data64     []uint64 // physical store for w∈{64,128} and packed w=32
-	data32     []uint32 // physical store for unpacked w=32 only
+	data64     []uint64 // physical store for w∈{64,128}
+	data32     []uint32 // physical store for w=32
 	numBlocks  uint32   // numSlots / w
 	coeffBits  uint32   // ribbon width w (true width — 32, 64, or 128)
 	resultBits uint     // number of fingerprint bits r (≤ 8)
@@ -415,9 +412,7 @@ func newICMLSolution(numBlocks, coeffBits uint32, resultBits uint) *icmlSolution
 		sol.data64 = make([]uint64, logicalWords)
 	case encW128:
 		sol.data64 = make([]uint64, 2*logicalWords)
-	case encW32Packed:
-		sol.data64 = make([]uint64, (logicalWords+1)/2)
-	case encW32Unpacked:
+	case encW32:
 		sol.data32 = make([]uint32, logicalWords)
 	}
 	return sol
@@ -431,19 +426,15 @@ func (s *icmlSolution) icmlGetWord(L uint32) (lo, hi uint64) {
 		return s.data64[L], 0
 	case encW128:
 		return s.data64[2*L], s.data64[2*L+1]
-	case encW32Packed:
-		shift := (L & 1) * 32
-		return (s.data64[L>>1] >> shift) & 0xffffffff, 0
-	default: // encW32Unpacked
+	default: // encW32
 		return uint64(s.data32[L]), 0
 	}
 }
 
 // icmlSetWord writes the logical ICML word at index L. It is the inverse of
-// icmlGetWord and masks so a flush of the (possibly dirty-high-bit) state[j]
-// register writes only the logical word's bits without clobbering a paired
-// 32-bit lane. All w≤64 encodings ignore hi; both w=32 encodings mask lo to 32
-// bits.
+// icmlGetWord: it stores only the logical word's bits, masking the (possibly
+// dirty-high-bit) state[j] register to the physical word width. All w≤64
+// encodings ignore hi; the w=32 encoding truncates lo to 32 bits.
 func (s *icmlSolution) icmlSetWord(L uint32, lo, hi uint64) {
 	switch s.enc {
 	case encW64:
@@ -451,12 +442,7 @@ func (s *icmlSolution) icmlSetWord(L uint32, lo, hi uint64) {
 	case encW128:
 		s.data64[2*L] = lo
 		s.data64[2*L+1] = hi
-	case encW32Packed:
-		p := L >> 1
-		shift := (L & 1) * 32
-		mask := uint64(0xffffffff) << shift
-		s.data64[p] = (s.data64[p] &^ mask) | ((lo & 0xffffffff) << shift)
-	default: // encW32Unpacked
+	default: // encW32
 		s.data32[L] = uint32(lo)
 	}
 }

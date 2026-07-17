@@ -514,14 +514,9 @@ func TestFilter_ICMLPhysicalLen(t *testing.T) {
 				if uint32(len(f.data64)) != 2*logicalWords {
 					t.Errorf("w=128: len(data64)=%d, want %d", len(f.data64), 2*logicalWords)
 				}
-			case encW32Packed:
-				want := (logicalWords + 1) / 2
-				if uint32(len(f.data64)) != want {
-					t.Errorf("w=32 packed: len(data64)=%d, want %d", len(f.data64), want)
-				}
-			case encW32Unpacked:
+			case encW32:
 				if uint32(len(f.data32)) != logicalWords {
-					t.Errorf("w=32 unpacked: len(data32)=%d, want %d", len(f.data32), logicalWords)
+					t.Errorf("w=32: len(data32)=%d, want %d", len(f.data32), logicalWords)
 				}
 			}
 		})
