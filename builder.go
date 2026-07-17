@@ -357,6 +357,13 @@ func computeNumSlots(numKeys int, coeffBits uint32) uint32 {
 		numSlots = minSlots
 	}
 
+	// ICML invariant (paper §5.2): the Interleaved Column-Major Layout groups
+	// slots into blocks of exactly w rows (numBlocks = numSlots / w), so
+	// numSlots MUST be a multiple of the ribbon width w. Round up. The
+	// minSlots floor (coeffBits*2) is already a multiple of w, so this only
+	// grows numSlots when the interpolated value is not w-aligned.
+	numSlots = ((numSlots + coeffBits - 1) / coeffBits) * coeffBits
+
 	return numSlots
 }
 
@@ -390,6 +397,12 @@ func buildCoreWithOverride(hashes []uint64, cfg Config, overheadRatio float64) (
 	numKeys := len(hashes)
 	numStarts := computeNumStarts(numKeys, overheadRatio)
 	numSlots := numStarts + cfg.CoeffBits - 1
+
+	// ICML invariant (paper §5.2): numSlots must be a multiple of the ribbon
+	// width w. Round numSlots up to a multiple of w and recompute numStarts
+	// so the hasher and bander agree with the rounded slot count.
+	numSlots = ((numSlots + cfg.CoeffBits - 1) / cfg.CoeffBits) * cfg.CoeffBits
+	numStarts = numSlots - cfg.CoeffBits + 1
 
 	h := newStandardHasher(cfg.CoeffBits, numStarts, cfg.ResultBits, cfg.FirstCoeffAlwaysOne)
 	bd := newStandardBander(numSlots, cfg.CoeffBits, cfg.FirstCoeffAlwaysOne)
