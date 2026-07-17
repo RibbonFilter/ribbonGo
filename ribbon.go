@@ -197,7 +197,7 @@ func (r *Ribbon) Build(keys []string) error {
 // Returns false if Build has not been called yet.
 //
 // This is the hot path of the library — zero allocations, branchless
-// coefficient derivation, and skip-zero dot product iteration.
+// coefficient derivation, and a short-circuiting per-column ICML query.
 func (r *Ribbon) Contains(key string) bool {
 	if r.f == nil {
 		return false

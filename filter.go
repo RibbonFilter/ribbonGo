@@ -101,18 +101,20 @@ type filter struct {
 // and check whether c(x) · S[s(x)..s(x)+w-1] = r(x) over GF(2)."
 //
 // Performance: this method is the most frequently called code in the
-// entire library. It is designed for:
+// entire library. The query decodes the ICML solution (paper §5.2) and is
+// designed for:
 //   - Zero heap allocations: hashResult is a value type (stack-allocated),
 //     and derive() is inlineable (cost 67 < budget 80).
-//   - Minimal branching: the only branch is the numStarts==0 guard
-//     (always-false for non-empty filters, perfectly predicted).
-//   - Bounds-check elimination: a single `_ = data[127]` proof at the
-//     top of containsHash eliminates all per-iteration bounds checks.
-//   - Skip-zero iteration: the dot-product loop iterates only over set
-//     bits using TZCNT + clear-lowest-bit, halving iteration count vs
-//     a naive 0..w loop (~w/2 iterations for random coefficient rows).
+//   - Minimal branching: the numStarts==0 guard and, in containsHash, one
+//     branch on the ICML encoding (w=32 vs w≤64 vs w=128).
+//   - Bounds-check elimination: a single width-specific `_ = store[maxIdx]`
+//     proof at the top of containsHash eliminates all per-column bounds
+//     checks (the trailing zero block keeps the two-block read in bounds).
+//   - Column short-circuit: containsHash compares result columns one at a
+//     time and returns false on the first mismatch, so non-members exit
+//     early (D3).
 //
-// [RocksDB: SimpleFilterQuery in ribbon_alg.h]
+// [RocksDB: InterleavedFilterQuery in ribbon_alg.h]
 func (f *filter) contains(key string) bool {
 	if f.hasher.numStarts == 0 {
 		return false

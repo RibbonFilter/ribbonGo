@@ -242,13 +242,15 @@ func BenchmarkPaper_Query_Positive(b *testing.B) {
 // Paper §6: "Negative query time" column.
 //
 // Same setup as positive queries, but probes are keys NOT in the build
-// set. The cost should be virtually identical to positive queries
-// because the full GF(2) dot product is always computed before the
-// result comparison — there is no early-exit branch.
+// set. With the ICML layout (paper §5.2) the query decodes result columns
+// one at a time and SHORT-CIRCUITS on the first mismatched column (D3), so
+// negatives are faster than positives: a non-member fails column 0 with
+// probability ~1/2 and returns immediately.
 //
-// Identical true-positive vs true-negative cost confirms there is no
-// timing side-channel: an adversary cannot distinguish member from
-// non-member queries by observing latency.
+// This is a deliberate trade-off (paper §5.2: short-circuiting is used
+// except for a compile-time fixed r ≤ 4, which this library does not do):
+// throughput on non-member-heavy workloads improves, at the cost of a
+// query-latency signal an adversary could observe.
 // =============================================================================
 
 func BenchmarkPaper_Query_Negative(b *testing.B) {

@@ -144,9 +144,11 @@ The public API is intentionally minimal — a single type with four functions.
 
 ## Benchmarks
 
-**Apple M3 Pro · Go 1.25 · ARM64 · r = 7 result bits · firstCoeffAlwaysOne = true**
+**Query numbers: x86 Xeon Platinum · Go 1.25 · amd64 · r = 7 result bits · firstCoeffAlwaysOne = true**
 
 All benchmarks follow the methodology of Dillinger & Walzer (2021), testing at both *n* = 10⁶ and *n* = 10⁸ keys.
+
+> The *Build* and *Space* tables below were measured on an Apple M3 Pro (ARM64); the *Query Performance* table was re-measured on an x86 Xeon Platinum host after the ICML migration. Space/correctness figures (bits/key, FPR) are CPU-independent; absolute ns/op are not comparable across the two hosts.
 
 ### Build Performance
 
@@ -165,15 +167,17 @@ Construction throughput and space efficiency at scale.
 
 ### Query Performance
 
-Lookup latency per key (*n* = 10⁶).
+Lookup latency per key (*n* = 10⁶), measured on an **x86 Xeon Platinum** host (see the note under *Benchmarks*). Queries use the [Interleaved Column-Major Layout](#memory-layout-interleaved-column-major-icml) (paper §5.2).
 
 | Width | Positive (ns/op) | Negative (ns/op) |
 |-------|-------------------|-------------------|
-| w=32 | 37.25 | 36.85 |
-| w=64 | 53.70 | 52.49 |
-| w=128 | 88.66 | 84.73 |
+| w=32 | 32.3 | 26.9 |
+| w=64 | 31.5 | 26.3 |
+| w=128 | 43.2 | 31.7 |
 
-> Query time scales linearly with ribbon width, as expected — the inner loop performs a dot product over *w* bits. Positive and negative queries have nearly identical cost.
+> With ICML the query decodes the *r* result columns one at a time (each an XOR-fold + POPCNT parity) rather than XOR-ing ~*w*/2 solution bytes, so cost is roughly flat in *w* for w ≤ 64 and only rises at w = 128 (two 64-bit halves per column). Negative queries **short-circuit** on the first mismatched result column (paper §5.2), so they are consistently faster than positive queries — the opposite of the old row-major layout, where the full dot product was always computed.
+>
+> Isolating just the filter query (pre-hashed `ContainsHash`, no XXH3) makes the layout change stark versus the previous row-major layout on the same host: w=64 positive drops from ~42 ns to ~19 ns and w=128 from ~74 ns to ~35 ns; negatives fall to ~8–11 ns across all widths.
 
 ### Space Efficiency
 
@@ -221,14 +225,17 @@ Key → [Hash] → [Bander] → [Solver] → [Filter/Query]
 | **uint128** | `uint128.go` | 128-bit integer type for coefficient rows when w=128. |
 | **Hash** | `hash.go` | Two-phase pipeline: hash each key once with XXH3, then cheaply remix per seed to derive `(start, coeffRow, result)` triples. |
 | **Bander** | `bander.go` | On-the-fly Gaussian elimination over GF(2). Converts hashed equations into an upper-triangular banded matrix. Hottest code path during construction. |
-| **Solver** | `solver.go` | Back-substitution: solves the upper-triangular system to produce the compact solution vector encoding the filter. |
-| **Filter** | `filter.go` | Query evaluation: one hash, one dot product over GF(2). Also provides false-positive rate estimation. |
+| **Solver** | `solver.go` | Back-substitution: solves the upper-triangular system, writing the solution directly into the [Interleaved Column-Major Layout](#memory-layout-interleaved-column-major-icml) (paper §5.2). The row-major solution is retained only as a cross-validation oracle. |
+| **Filter** | `filter.go` | Query evaluation: one hash, then a per-result-column GF(2) dot product over the ICML words, short-circuiting on the first mismatch. Also provides false-positive rate estimation. |
 | **Builder** | `builder.go` | Orchestrates the full pipeline: hashing → banding → solving → filter construction. Includes RocksDB-style dynamic slot computation. |
 | **Public API** | `ribbon.go` | Sole public surface: `Ribbon`, `Config`, `New()`, `NewWithConfig()`, `Build()`, `Contains()`. |
 
 ### Key Optimisations
 
-**SoA layout** — Coefficient data is stored in parallel arrays (`coeffLo []uint64`, `coeffHi []uint64`, `result []uint8`) instead of an array of structs. For w≤64, `coeffHi` is `nil` — zero memory, zero operations. This doubles the number of coefficients per cache line compared to AoS layout.
+<a name="memory-layout-interleaved-column-major-icml"></a>
+**Memory layout (Interleaved Column-Major, ICML)** — The solved solution *Z* is stored in the Interleaved Column-Major Layout from paper §5.2 (RocksDB's `InterleavedSolutionStorage`), *not* one byte per slot. Memory is divided into *w*-bit **words** grouped into **blocks** of *r* words; block *b* is the column-major transpose of solution rows `[b·w, b·w + w)`, so `bit k of word(b, j) = Z[b·w + k].bit_j`. A query at start *s* reads column *j* from the two words straddling the block boundary at *s* (blocks `s/w` and `s/w+1`), shifts by `s % w` to reconstruct the *w*-bit column slice, and takes `parity(slice & coeffRow)` for each of the *r* result columns — comparing to the expected fingerprint and short-circuiting on the first mismatch. Because `numSlots` is rounded up to a multiple of *w* and one trailing zero block is allocated, a single width-specific bounds-check-elimination proof covers the whole two-block read with no per-column bounds checks. Physical storage is width-specialised: `[]uint64` for w ∈ {64, 128} and `[]uint32` for w = 32 (the unpacked encoding won a benchmark against a packed two-lanes-per-`uint64` variant).
+
+**SoA layout (construction)** — During banding, coefficient data is stored in parallel arrays (`coeffLo []uint64`, `coeffHi []uint64`, `result []uint8`) instead of an array of structs. For w≤64, `coeffHi` is `nil` — zero memory, zero operations. This doubles the number of coefficients per cache line compared to AoS layout.
 
 **Width specialisation** — `add()` dispatches to `addW64()` (pure `uint64`, ~10 ARM64 instructions per elimination step) or `addW128()` (separate lo/hi `uint64` ops). The generic `uint128.rsh()` branch dispatch is avoided entirely.
 

@@ -155,24 +155,20 @@ func BenchmarkContains_TruePositive(b *testing.B) {
 // ---------------------------------------------------------------------------
 // 2. Contains — true negative queries (non-member keys)
 //
-// Measures the same per-query path, but all queries return false. The
-// cost should be virtually identical to true positives because the
-// full dot product is always computed before comparison.
+// Measures the same per-query path, but all queries return false. With the
+// ICML layout (paper §5.2) the query decodes the r result columns one at a
+// time and SHORT-CIRCUITS on the first mismatched column (D3), so true
+// negatives are markedly faster than true positives. This Contains path also
+// pays XXH3 (~10 ns), which narrows the relative gap versus ContainsHash.
 //
-// Reference results (Apple M3 Pro, Go 1.25.4, n=10000, -benchtime=10s):
-//
-//   Width   ns/op   B/op   allocs/op
-//   ─────   ─────   ────   ─────────
-//   w=32    30.35   0      0
-//   w=64    47.13   0      0
-//   w=128   79.18   0      0
+// Reference results (x86 Xeon Platinum, Go 1.25.x, n=10000): true-negative
+// cost is below true-positive cost because a non-member mismatches the first
+// result column with probability ~1/2 and exits early.
 //
 // Key observations:
-//   • True-negative cost ≈ true-positive cost (within ~5%) — the full
-//     GF(2) dot product is always computed before the result comparison.
-//     No early-exit branch exists.
-//   • This means adversarial workloads (all non-member queries) pay
-//     exactly the same cost as member queries — no timing side-channel.
+//   • True negatives short-circuit on the first mismatched result column, so
+//     adversarial workloads (all non-member queries) are cheaper than member
+//     queries; do not rely on this path for constant-time behaviour.
 // ---------------------------------------------------------------------------
 
 func BenchmarkContains_TrueNegative(b *testing.B) {
@@ -209,26 +205,24 @@ func BenchmarkContains_TrueNegative(b *testing.B) {
 // This is the pure "filter query" cost, useful for comparing against
 // other filter implementations that separate hashing from querying.
 //
-// Reference results (Apple M3 Pro, Go 1.25.4, n=10000, -benchtime=10s):
+// Reference results (x86 Xeon Platinum, Go 1.25.x, ICML, n=10000):
 //
 //   Width   TP ns/op   TN ns/op   B/op   allocs/op
 //   ─────   ────────   ────────   ────   ─────────
-//   w=32    12.15      12.51      0      0
-//   w=64    25.96      26.25      0      0
-//   w=128   48.99      51.63      0      0
+//   w=32    ~20.4      ~8.9       0      0
+//   w=64    ~19.2      ~8.4       0      0
+//   w=128   ~34.6      ~10.7      0      0
 //
 // Key observations:
-//   • Removes XXH3 (~25 ns) from the measured path, isolating the pure
-//     filter query: derive (0.4 ns) + dot product + comparison.
-//   • w=32: ~12.2 ns — ~16 set bits on average, ~0.76 ns per set-bit
-//     iteration (TZCNT + XOR + BLSR).
-//   • w=64: ~26.0 ns — ~32 set bits, same ~0.81 ns/bit.
-//   • w=128: ~49.0 ns — ~64 set bits across lo+hi halves, same per-bit
-//     cost. The sequential lo→hi processing adds no measurable overhead.
-//   • TP ≈ TN to within noise — confirms no early-exit optimisation.
-//   • Compare with solver's Query benchmark (37 ns for w=64): the Filter's
-//     containsHash is ~30% faster due to the BCE-padded data slice
-//     eliminating per-iteration bounds checks.
+//   • ICML decodes the r result columns one at a time (r POPCNT-based column
+//     parities) and short-circuits on the first mismatch (D3).
+//   • True positives confirm all r columns; the cost is roughly flat in w
+//     (r column parities, not ~w/2 byte XORs), so w=64 no longer costs ~2×
+//     w=32. w=128 costs more only because each column parity folds two
+//     64-bit halves.
+//   • True negatives exit on the first mismatched column (prob ~1/2 at
+//     column 0), so TN ≪ TP — the opposite of the old row-major layout,
+//     where the full dot product was always computed.
 // ---------------------------------------------------------------------------
 
 func BenchmarkContainsHash_TruePositive(b *testing.B) {
