@@ -377,3 +377,5 @@ go test ./...
 ## License
 
 [MIT](LICENSE) © 2026 RibbonFilter
+
+<meta name="google-site-verification" content="UemkzI_ais6PdQ1JOLY-AfD2hAAasr02KHRUd72fhOA" />
